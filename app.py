@@ -21,7 +21,7 @@ INFLUXDB_MEASUREMENT = "network_traffic"
 
 # --- Sidebar Controls ---
 st.sidebar.title("Controls")
-time_window = "-14d"  # Changed from selectable to fixed 14 days
+time_window = "-14d"
 threshold = st.sidebar.slider("Anomaly Threshold", 0.01, 1.0, 0.1, 0.01)
 
 # --- Title ---
@@ -48,7 +48,6 @@ try:
     if df.empty or "packet_length" not in df.columns or "inter_arrival_time" not in df.columns:
         st.warning("No valid data found.")
     else:
-        # Prepare prediction batch
         payloads = df[["inter_arrival_time", "packet_length"]].dropna().to_dict(orient="records")
         preds = []
         for row, payload in zip(df.iterrows(), payloads):
@@ -57,7 +56,9 @@ try:
                 result = response.json()
                 result.update({
                     "timestamp": row[1]["_time"],
-                    "label": row[1].get("label", None)
+                    "label": row[1].get("label", None),
+                    "inter_arrival_time": payload["inter_arrival_time"],
+                    "packet_length": payload["packet_length"]
                 })
                 preds.append(result)
             except:
