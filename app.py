@@ -2,10 +2,13 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
+import time
 from influxdb_client import InfluxDBClient
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import plotly.figure_factory as ff
 
 # --- Page Setup ---
@@ -19,13 +22,44 @@ INFLUXDB_ORG = "Anormally Detection"
 INFLUXDB_BUCKET = "realtime"
 INFLUXDB_MEASUREMENT = "network_traffic"
 
+# --- Initialize session state ---
+if 'monitoring_active' not in st.session_state:
+    st.session_state.monitoring_active = False
+if 'historical_data' not in st.session_state:
+    st.session_state.historical_data = []
+if 'anomaly_alerts' not in st.session_state:
+    st.session_state.anomaly_alerts = []
+
 # --- Sidebar Controls ---
-st.sidebar.title("Controls")
+st.sidebar.title("🔧 Controls")
+
+# Auto-refresh settings
+auto_refresh = st.sidebar.checkbox("Auto Refresh", value=True)
+refresh_interval = st.sidebar.selectbox("Refresh Interval", [5, 10, 15, 30, 60], index=1)
+
 time_window = st.sidebar.selectbox("Time Range", ["-5m", "-15m", "-1h", "-6h", "-12h", "-1d", "-7d", "-30d"], index=2)
 thresh = st.sidebar.slider("Anomaly Threshold", 0.01, 1.0, 0.1, 0.01)
-debug_mode = st.sidebar.checkbox("Show Debug Info", value=True)
+max_records = st.sidebar.slider("Max Records to Process", 50, 500, 200, 50)
 
-# Add configuration override in sidebar
+# Monitoring controls
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎛️ Monitoring Controls")
+
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    if st.button("▶️ Start", type="primary"):
+        st.session_state.monitoring_active = True
+with col2:
+    if st.button("⏹️ Stop"):
+        st.session_state.monitoring_active = False
+
+# Clear data button
+if st.sidebar.button("🗑️ Clear History"):
+    st.session_state.historical_data = []
+    st.session_state.anomaly_alerts = []
+    st.rerun()
+
+# Configuration override
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔧 Configuration Override")
 custom_bucket = st.sidebar.text_input("Bucket Name", value=INFLUXDB_BUCKET)
@@ -41,353 +75,408 @@ if custom_org:
     INFLUXDB_ORG = custom_org
 
 # --- Title ---
-st.title("🚀 DoS Anomaly Detection Dashboard")
+st.title("🚀 Real-Time DoS Anomaly Detection Dashboard")
 
-# --- Enhanced Diagnostics ---
-st.subheader("🔧 Enhanced Diagnostics")
+# Status indicator
+status_col1, status_col2, status_col3 = st.columns([1, 1, 2])
+with status_col1:
+    if st.session_state.monitoring_active:
+        st.success("🟢 ACTIVE")
+    else:
+        st.error("🔴 STOPPED")
 
-# Test connection first
-try:
-    client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
-    query_api = client.query_api()
-    
-    # Test basic connection
-    st.write("**Connection Test:**")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.write("✅ InfluxDB client created successfully")
-        st.write(f"🔗 URL: `{INFLUXDB_URL}`")
-        st.write(f"🏢 Organization: `{INFLUXDB_ORG}`")
-        st.write(f"🪣 Bucket: `{INFLUXDB_BUCKET}`")
-        st.write(f"📊 Measurement: `{INFLUXDB_MEASUREMENT}`")
-        st.write(f"⏰ Time Range: `{time_window}`")
+with status_col2:
+    st.info(f"⏱️ Refresh: {refresh_interval}s")
 
-    # Test 1: Check if any data exists in the bucket (any measurement, any time)
-    st.write("**Step 1: Check if bucket has ANY data**")
+with status_col3:
+    if st.session_state.historical_data:
+        last_update = max([d['timestamp'] for d in st.session_state.historical_data])
+        st.write(f"📅 Last Update: {last_update}")
+
+# --- Navigation Tabs ---
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏠 Overview", "📊 Live Stream", "⚙️ Manual Entry", "📈 Metrics & Alerts", "🔧 Diagnostics"])
+
+# --- Helper Functions ---
+@st.cache_data(ttl=30)
+def get_influx_data(time_range, bucket, measurement, org):
+    """Fetch data from InfluxDB with caching"""
     try:
-        test_query_any = f'''
-        from(bucket: "{INFLUXDB_BUCKET}")
-          |> range(start: -30d)
-          |> limit(n: 1)
+        client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=org)
+        query_api = client.query_api()
+        
+        query = f'''
+        from(bucket: "{bucket}")
+          |> range(start: {time_range})
+          |> filter(fn: (r) => r._measurement == "{measurement}")
+          |> filter(fn: (r) => r._field == "inter_arrival_time" or r._field == "packet_length" or r._field == "label")
+          |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+          |> sort(columns: ["_time"])
+          |> limit(n: {max_records})
         '''
         
-        any_data = query_api.query_data_frame(org=INFLUXDB_ORG, query=test_query_any)
-        if isinstance(any_data, list) and any_data:
-            any_data = pd.concat(any_data, ignore_index=True)
+        data = query_api.query_data_frame(org=org, query=query)
+        if isinstance(data, list) and data:
+            data = pd.concat(data, ignore_index=True)
         
-        if any_data is not None and not any_data.empty:
-            st.success(f"✅ Bucket contains data! Found {len(any_data)} records")
-            if debug_mode:
-                st.json({
-                    "columns": any_data.columns.tolist(),
-                    "shape": any_data.shape,
-                    "sample_data": any_data.head(3).to_dict('records') if len(any_data) > 0 else []
-                })
-        else:
-            st.error("❌ Bucket is completely empty - no data found in last 30 days")
-            st.info("**Possible issues:**")
-            st.write("- Data hasn't been written to InfluxDB yet")
-            st.write("- Wrong bucket name")
-            st.write("- Authentication issues")
-            st.stop()
-            
+        client.close()
+        return data
+        
     except Exception as e:
-        st.error(f"❌ Cannot access bucket: {e}")
-        st.info("**Possible issues:**")
-        st.write("- Invalid token or permissions")
-        st.write("- Wrong organization name")
-        st.write("- Network connectivity issues")
-        st.stop()
+        st.error(f"InfluxDB Error: {e}")
+        return None
 
-    # Test 2: List all measurements in the bucket
-    st.write("**Step 2: List all measurements in bucket**")
+def predict_anomaly(inter_arrival_time, packet_length):
+    """Make prediction using the API"""
     try:
-        measurements_query = f'''
-        import "influxdata/influxdb/schema"
-        schema.measurements(bucket: "{INFLUXDB_BUCKET}")
-        '''
+        payload = {
+            "inter_arrival_time": float(inter_arrival_time),
+            "packet_length": float(packet_length)
+        }
         
-        measurements_df = query_api.query_data_frame(org=INFLUXDB_ORG, query=measurements_query)
-        if isinstance(measurements_df, list) and measurements_df:
-            measurements_df = pd.concat(measurements_df, ignore_index=True)
+        response = requests.post(API_URL, json=payload, timeout=10)
+        response.raise_for_status()
+        return response.json()
         
-        if measurements_df is not None and not measurements_df.empty and '_value' in measurements_df.columns:
-            available_measurements = measurements_df['_value'].unique().tolist()
-            st.write(f"**Available measurements ({len(available_measurements)}):**")
-            
-            for i, measurement in enumerate(available_measurements, 1):
-                if measurement == INFLUXDB_MEASUREMENT:
-                    st.write(f"{i}. ✅ `{measurement}` (selected)")
-                else:
-                    st.write(f"{i}. 📊 `{measurement}`")
-                    
-            if INFLUXDB_MEASUREMENT not in available_measurements:
-                st.warning(f"⚠️ Your measurement '{INFLUXDB_MEASUREMENT}' not found!")
-                st.info("Try using one of the available measurements above in the sidebar.")
-        else:
-            st.warning("❌ No measurements found using schema.measurements()")
-            
     except Exception as e:
-        st.warning(f"Schema query failed: {e}")
-        
-        # Fallback: try to find measurements manually
+        return {"error": str(e)}
+
+def process_batch_predictions(df):
+    """Process a batch of predictions"""
+    predictions = []
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for i, (index, row) in enumerate(df.iterrows()):
+        if not st.session_state.monitoring_active:
+            break
+            
         try:
-            fallback_query = f'''
-            from(bucket: "{INFLUXDB_BUCKET}")
-              |> range(start: -30d)
-              |> group()
-              |> distinct(column: "_measurement")
-              |> limit(n: 100)
-            '''
+            result = predict_anomaly(row['inter_arrival_time'], row['packet_length'])
             
-            fallback_df = query_api.query_data_frame(org=INFLUXDB_ORG, query=fallback_query)
-            if isinstance(fallback_df, list) and fallback_df:
-                fallback_df = pd.concat(fallback_df, ignore_index=True)
-            
-            if fallback_df is not None and not fallback_df.empty and '_value' in fallback_df.columns:
-                measurements = fallback_df['_value'].unique().tolist()
-                st.write(f"**Found measurements (fallback method):**")
-                for measurement in measurements:
-                    if measurement == INFLUXDB_MEASUREMENT:
-                        st.write(f"✅ `{measurement}` (selected)")
-                    else:
-                        st.write(f"📊 `{measurement}`")
-            else:
-                st.error("❌ No measurements found with fallback method either")
+            if 'error' not in result:
+                result.update({
+                    "timestamp": row["_time"],
+                    "inter_arrival_time": row['inter_arrival_time'],
+                    "packet_length": row['packet_length'],
+                    "label": row.get("label", None),
+                    "source_ip": row.get("source_ip", "Unknown"),
+                    "dest_ip": row.get("dest_ip", "Unknown"),
+                    "dns_rate": row.get("dns_rate", 1.0)
+                })
+                predictions.append(result)
                 
-        except Exception as e2:
-            st.error(f"❌ Fallback measurement query also failed: {e2}")
+                # Add to historical data
+                st.session_state.historical_data.append(result)
+                
+                # Check for anomalies and add alerts
+                if result.get('anomaly', 0) == 1:
+                    alert = {
+                        "timestamp": result["timestamp"],
+                        "severity": "HIGH" if result.get('reconstruction_error', 0) > thresh * 2 else "MEDIUM",
+                        "message": f"Anomaly detected: Reconstruction error {result.get('reconstruction_error', 0):.4f}",
+                        "source_ip": result.get("source_ip", "Unknown")
+                    }
+                    st.session_state.anomaly_alerts.append(alert)
+            
+            progress = (i + 1) / len(df)
+            progress_bar.progress(progress)
+            status_text.text(f"Processed {i + 1}/{len(df)} records")
+            
+        except Exception as e:
+            continue
+    
+    progress_bar.empty()
+    status_text.empty()
+    
+    # Limit historical data size
+    if len(st.session_state.historical_data) > 1000:
+        st.session_state.historical_data = st.session_state.historical_data[-1000:]
+    
+    if len(st.session_state.anomaly_alerts) > 100:
+        st.session_state.anomaly_alerts = st.session_state.anomaly_alerts[-100:]
+    
+    return predictions
 
-    # Test 3: Check specific measurement
-    st.write(f"**Step 3: Check measurement '{INFLUXDB_MEASUREMENT}'**")
-    try:
-        measurement_query = f'''
-        from(bucket: "{INFLUXDB_BUCKET}")
-          |> range(start: -30d)
-          |> filter(fn: (r) => r._measurement == "{INFLUXDB_MEASUREMENT}")
-          |> limit(n: 10)
-        '''
+# --- Tab 1: Overview ---
+with tab1:
+    st.subheader("📊 Analytical Dashboard")
+    
+    # Metrics overview
+    if st.session_state.historical_data:
+        df_hist = pd.DataFrame(st.session_state.historical_data)
         
-        measurement_data = query_api.query_data_frame(org=INFLUXDB_ORG, query=measurement_query)
-        if isinstance(measurement_data, list) and measurement_data:
-            measurement_data = pd.concat(measurement_data, ignore_index=True)
+        col1, col2, col3, col4 = st.columns(4)
         
-        if measurement_data is not None and not measurement_data.empty:
-            st.success(f"✅ Found {len(measurement_data)} records in measurement '{INFLUXDB_MEASUREMENT}'")
+        total_records = len(df_hist)
+        anomaly_count = df_hist['anomaly'].sum() if 'anomaly' in df_hist.columns else 0
+        normal_count = total_records - anomaly_count
+        anomaly_rate = (anomaly_count / total_records * 100) if total_records > 0 else 0
+        
+        col1.metric("Total Records", total_records)
+        col2.metric("Normal Traffic", normal_count)
+        col3.metric("Anomalies Detected", anomaly_count)
+        col4.metric("Anomaly Rate", f"{anomaly_rate:.1f}%")
+        
+        # Anomaly distribution pie chart
+        st.subheader("Anomaly Distribution")
+        
+        fig_pie = go.Figure(data=[go.Pie(
+            labels=['Normal', 'Attack'],
+            values=[normal_count, anomaly_count],
+            hole=.3,
+            marker_colors=['#1f77b4', '#87ceeb']
+        )])
+        
+        fig_pie.update_layout(
+            title="Anomaly Types",
+            annotations=[dict(text=f'{anomaly_rate:.1f}%', x=0.5, y=0.5, font_size=20, showarrow=False)]
+        )
+        
+        st.plotly_chart(fig_pie, use_container_width=True)
+        
+        # Time series plot
+        if len(df_hist) > 1:
+            st.subheader("📈 Real-Time Anomaly Detection")
             
-            # Show time range of data
-            if '_time' in measurement_data.columns:
-                min_time = measurement_data['_time'].min()
-                max_time = measurement_data['_time'].max()
-                st.write(f"📅 Data time range: {min_time} to {max_time}")
-                
-                # Check if data exists in selected time window
-                from datetime import datetime, timedelta
-                now = datetime.now()
-                time_deltas = {
-                    '-5m': timedelta(minutes=5),
-                    '-15m': timedelta(minutes=15),
-                    '-1h': timedelta(hours=1),
-                    '-6h': timedelta(hours=6),
-                    '-12h': timedelta(hours=12),
-                    '-1d': timedelta(days=1),
-                    '-7d': timedelta(days=7),
-                    '-30d': timedelta(days=30)
-                }
-                
-                if time_window in time_deltas:
-                    cutoff_time = now - time_deltas[time_window]
-                    recent_data = measurement_data[pd.to_datetime(measurement_data['_time']) >= cutoff_time]
-                    
-                    if not recent_data.empty:
-                        st.success(f"✅ Found {len(recent_data)} records in selected time range ({time_window})")
-                    else:
-                        st.warning(f"⚠️ No data found in selected time range ({time_window})")
-                        st.info(f"Most recent data is from: {max_time}")
-                        st.info("Try selecting a longer time range in the sidebar")
+            df_hist['timestamp'] = pd.to_datetime(df_hist['timestamp'])
+            df_hist = df_hist.sort_values('timestamp')
             
-            # Show available fields
-            if '_field' in measurement_data.columns:
-                available_fields = measurement_data['_field'].unique().tolist()
-                st.write(f"**Available fields ({len(available_fields)}):**")
-                
-                required_fields = ['inter_arrival_time', 'packet_length', 'label']
-                for field in available_fields:
-                    if field in required_fields:
-                        st.write(f"✅ `{field}` (required)")
-                    else:
-                        st.write(f"📊 `{field}`")
-                
-                missing_fields = [f for f in required_fields if f not in available_fields]
-                if missing_fields:
-                    st.warning(f"⚠️ Missing required fields: {missing_fields}")
-            
-            if debug_mode:
-                with st.expander("🔍 Sample Data from Measurement"):
-                    st.dataframe(measurement_data.head(10))
-                    
-        else:
-            st.error(f"❌ No data found in measurement '{INFLUXDB_MEASUREMENT}'")
-            st.info("The measurement name might be incorrect, or no data has been written to it.")
-            
-    except Exception as e:
-        st.error(f"❌ Error checking measurement: {e}")
+            fig_ts = px.line(
+                df_hist, 
+                x="timestamp", 
+                y="reconstruction_error",
+                color="anomaly",
+                title="Reconstruction Error Over Time",
+                color_discrete_map={0: 'blue', 1: 'red'}
+            )
+            fig_ts.add_hline(y=thresh, line_dash="dash", line_color="green", annotation_text="Threshold")
+            st.plotly_chart(fig_ts, use_container_width=True)
+    
+    else:
+        st.info("📊 No data collected yet. Start monitoring to see analytics.")
 
-    # Test 4: Try the actual query with selected time range
-    st.write(f"**Step 4: Test query with selected time range ({time_window})**")
-    try:
-        actual_query = f'''
-        from(bucket: "{INFLUXDB_BUCKET}")
-          |> range(start: {time_window})
-          |> filter(fn: (r) => r._measurement == "{INFLUXDB_MEASUREMENT}")
-          |> limit(n: 50)
-        '''
+# --- Tab 2: Live Stream ---
+with tab2:
+    st.subheader("📡 Real-Time Monitoring")
+    
+    # Auto-refresh logic
+    if auto_refresh and st.session_state.monitoring_active:
+        placeholder = st.empty()
         
-        actual_data = query_api.query_data_frame(org=INFLUXDB_ORG, query=actual_query)
-        if isinstance(actual_data, list) and actual_data:
-            actual_data = pd.concat(actual_data, ignore_index=True)
-        
-        if actual_data is not None and not actual_data.empty:
-            st.success(f"✅ Query successful! Found {len(actual_data)} records in {time_window}")
-            
-            # Now try to process the data
-            st.subheader("📊 Data Processing")
-            
-            # Check for required fields
-            if '_field' in actual_data.columns and '_value' in actual_data.columns:
-                available_fields = actual_data['_field'].unique().tolist()
-                required_fields = ['inter_arrival_time', 'packet_length']
+        while st.session_state.monitoring_active:
+            with placeholder.container():
+                # Fetch fresh data
+                df = get_influx_data(time_window, INFLUXDB_BUCKET, INFLUXDB_MEASUREMENT, INFLUXDB_ORG)
                 
-                found_fields = [f for f in required_fields if f in available_fields]
-                st.write(f"Required fields found: {found_fields}")
-                
-                if len(found_fields) >= 2:  # At least 2 required fields
-                    # Try pivot approach
-                    pivot_query = f'''
-                    from(bucket: "{INFLUXDB_BUCKET}")
-                      |> range(start: {time_window})
-                      |> filter(fn: (r) => r._measurement == "{INFLUXDB_MEASUREMENT}")
-                      |> filter(fn: (r) => {" or ".join([f'r._field == "{f}"' for f in found_fields])})
-                      |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
-                      |> sort(columns: ["_time"])
-                      |> limit(n: 200)
-                    '''
+                if df is not None and not df.empty:
+                    # Check required columns
+                    required_cols = ['inter_arrival_time', 'packet_length']
+                    available_cols = [col for col in required_cols if col in df.columns]
                     
-                    pivot_data = query_api.query_data_frame(org=INFLUXDB_ORG, query=pivot_query)
-                    if isinstance(pivot_data, list) and pivot_data:
-                        pivot_data = pd.concat(pivot_data, ignore_index=True)
-                    
-                    if pivot_data is not None and not pivot_data.empty:
-                        st.success(f"✅ Pivot successful! Processing {len(pivot_data)} records")
+                    if len(available_cols) >= 2:
+                        df_clean = df.dropna(subset=available_cols)
                         
-                        # Continue with ML processing
-                        df = pivot_data.dropna(subset=found_fields)
-                        
-                        if len(df) > 0:
-                            # Prepare for API calls
-                            payloads = df[found_fields].to_dict(orient="records")
-                            predictions = []
+                        if len(df_clean) > 0:
+                            st.success(f"✅ Processing {len(df_clean)} records from InfluxDB")
                             
-                            progress_bar = st.progress(0)
-                            status_text = st.empty()
-                            
-                            with st.spinner("🔍 Running anomaly detection..."):
-                                for i, (index, row) in enumerate(df.iterrows()):
-                                    try:
-                                        payload = {
-                                            "inter_arrival_time": float(row[found_fields[0]] if found_fields[0] in row else row["inter_arrival_time"]),
-                                            "packet_length": float(row[found_fields[1]] if found_fields[1] in row and len(found_fields) > 1 else row["packet_length"])
-                                        }
-                                        
-                                        response = requests.post(API_URL, json=payload, timeout=10)
-                                        response.raise_for_status()
-                                        result = response.json()
-                                        
-                                        result.update({
-                                            "timestamp": row["_time"],
-                                            "inter_arrival_time": payload["inter_arrival_time"],
-                                            "packet_length": payload["packet_length"],
-                                            "label": row.get("label", None)
-                                        })
-                                        predictions.append(result)
-                                        
-                                        progress = (i + 1) / len(df)
-                                        progress_bar.progress(progress)
-                                        status_text.text(f"Processed {i + 1}/{len(df)} records")
-                                        
-                                        # Limit for demo
-                                        if i >= 49:  # Process max 50 records
-                                            break
-                                            
-                                    except Exception as e:
-                                        if debug_mode:
-                                            st.warning(f"API error at {i}: {e}")
-                                        continue
-                            
-                            progress_bar.empty()
-                            status_text.empty()
+                            # Process predictions
+                            predictions = process_batch_predictions(df_clean)
                             
                             if predictions:
                                 df_pred = pd.DataFrame(predictions)
                                 df_pred["timestamp"] = pd.to_datetime(df_pred["timestamp"])
                                 
-                                st.success(f"✅ Successfully processed {len(predictions)} predictions")
+                                # Display live data table
+                                st.subheader("📋 Live Data Stream")
                                 
-                                # Show results
-                                st.subheader("📈 Results")
+                                # Color-code anomalies
+                                def highlight_anomalies(row):
+                                    if row['anomaly'] == 1:
+                                        return ['background-color: #ffcccc'] * len(row)
+                                    return [''] * len(row)
                                 
-                                # Quick stats
-                                col1, col2, col3 = st.columns(3)
-                                anomaly_count = df_pred['anomaly'].sum()
-                                normal_count = len(df_pred) - anomaly_count
+                                display_df = df_pred[[
+                                    "timestamp", "source_ip", "dest_ip", "inter_arrival_time", 
+                                    "dns_rate", "reconstruction_error", "anomaly", "label"
+                                ]].copy()
                                 
-                                col1.metric("Total Records", len(df_pred))
-                                col2.metric("Normal", normal_count)
-                                col3.metric("Anomalies", anomaly_count)
-                                
-                                # Simple plot
-                                fig = px.line(
-                                    df_pred, 
-                                    x="timestamp", 
-                                    y="reconstruction_error",
-                                    color="anomaly",
-                                    title="Anomaly Detection Results"
-                                )
-                                fig.add_hline(y=thresh, line_dash="dash", line_color="green")
-                                st.plotly_chart(fig, use_container_width=True)
-                                
-                                # Data table
-                                st.subheader("📋 Data Table")
-                                st.dataframe(df_pred[[
-                                    "timestamp", 
-                                    "inter_arrival_time", 
-                                    "packet_length", 
-                                    "reconstruction_error", 
-                                    "anomaly"
-                                ]])
+                                styled_df = display_df.style.apply(highlight_anomalies, axis=1)
+                                st.dataframe(styled_df, use_container_width=True, height=400)
                                 
                             else:
-                                st.error("❌ No predictions returned from API")
+                                st.warning("⚠️ No predictions generated")
                         else:
-                            st.error("❌ No valid data after removing null values")
+                            st.warning("⚠️ No valid data after cleaning")
                     else:
-                        st.error("❌ Pivot operation failed")
+                        st.error(f"❌ Missing required columns. Available: {df.columns.tolist()}")
                 else:
-                    st.error(f"❌ Insufficient required fields. Found: {found_fields}")
-            else:
-                st.warning("❌ Data doesn't follow _field/_value structure")
-                
-        else:
-            st.error(f"❌ No data found in selected time range ({time_window})")
-            st.info("Try selecting a longer time range or check if data is being written to InfluxDB")
+                    st.warning("⚠️ No data retrieved from InfluxDB")
             
+            # Wait before next refresh
+            time.sleep(refresh_interval)
+            st.rerun()
+    
+    elif st.session_state.monitoring_active:
+        st.info("🔄 Manual refresh mode. Click 'Refresh' to update data.")
+        if st.button("🔄 Refresh Data"):
+            st.rerun()
+    
+    else:
+        st.info("▶️ Click 'Start' in the sidebar to begin monitoring")
+
+# --- Tab 3: Manual Entry ---
+with tab3:
+    st.subheader("🔧 Manual Entry for Testing")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        inter_arrival_time = st.number_input("Inter Arrival Time", value=0.02, format="%.6f")
+    
+    with col2:
+        dns_rate = st.number_input("DNS Rate", value=5.00, format="%.2f")
+    
+    if st.button("🔍 Predict Anomaly", type="primary"):
+        with st.spinner("Making prediction..."):
+            result = predict_anomaly(inter_arrival_time, dns_rate)
+            
+            if 'error' in result:
+                st.error(f"❌ Error: {result['error']}")
+            else:
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    if result.get('anomaly', 0) == 1:
+                        st.error("🚨 ANOMALY DETECTED")
+                    else:
+                        st.success("✅ NORMAL TRAFFIC")
+                
+                with col2:
+                    st.metric("Reconstruction Error", f"{result.get('reconstruction_error', 0):.6f}")
+                
+                with col3:
+                    st.metric("Threshold", f"{thresh:.2f}")
+
+# --- Tab 4: Metrics & Alerts ---
+with tab4:
+    st.subheader("📈 Metrics & Performance")
+    
+    if st.session_state.anomaly_alerts:
+        st.subheader("🚨 Recent Alerts")
+        
+        alerts_df = pd.DataFrame(st.session_state.anomaly_alerts)
+        alerts_df['timestamp'] = pd.to_datetime(alerts_df['timestamp'])
+        alerts_df = alerts_df.sort_values('timestamp', ascending=False)
+        
+        # Color code by severity
+        def color_severity(row):
+            if row['severity'] == 'HIGH':
+                return ['background-color: #ffcccc'] * len(row)
+            elif row['severity'] == 'MEDIUM':
+                return ['background-color: #fff2cc'] * len(row)
+            return ['background-color: #ccffcc'] * len(row)
+        
+        styled_alerts = alerts_df.style.apply(color_severity, axis=1)
+        st.dataframe(styled_alerts, use_container_width=True)
+        
+        # Alert statistics
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            high_alerts = len(alerts_df[alerts_df['severity'] == 'HIGH'])
+            st.metric("High Severity", high_alerts)
+        
+        with col2:
+            medium_alerts = len(alerts_df[alerts_df['severity'] == 'MEDIUM'])
+            st.metric("Medium Severity", medium_alerts)
+        
+        with col3:
+            recent_alerts = len(alerts_df[alerts_df['timestamp'] > datetime.now() - timedelta(hours=1)])
+            st.metric("Last Hour", recent_alerts)
+    
+    else:
+        st.info("📊 No alerts generated yet.")
+    
+    # Performance metrics
+    if st.session_state.historical_data:
+        st.subheader("⚡ Performance Metrics")
+        
+        df_perf = pd.DataFrame(st.session_state.historical_data)
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            avg_reconstruction_error = df_perf['reconstruction_error'].mean() if 'reconstruction_error' in df_perf.columns else 0
+            st.metric("Avg Reconstruction Error", f"{avg_reconstruction_error:.4f}")
+        
+        with col2:
+            max_reconstruction_error = df_perf['reconstruction_error'].max() if 'reconstruction_error' in df_perf.columns else 0
+            st.metric("Max Reconstruction Error", f"{max_reconstruction_error:.4f}")
+        
+        with col3:
+            detection_rate = (df_perf['anomaly'].sum() / len(df_perf) * 100) if 'anomaly' in df_perf.columns and len(df_perf) > 0 else 0
+            st.metric("Detection Rate", f"{detection_rate:.1f}%")
+        
+        with col4:
+            processing_rate = len(df_perf)
+            st.metric("Records Processed", processing_rate)
+
+# --- Tab 5: Diagnostics ---
+with tab5:
+    st.subheader("🔧 Enhanced Diagnostics")
+    
+    # Connection test
+    try:
+        client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
+        query_api = client.query_api()
+        
+        st.success("✅ InfluxDB connection successful")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write(f"🔗 **URL:** `{INFLUXDB_URL}`")
+            st.write(f"🏢 **Organization:** `{INFLUXDB_ORG}`")
+            st.write(f"🪣 **Bucket:** `{INFLUXDB_BUCKET}`")
+        
+        with col2:
+            st.write(f"📊 **Measurement:** `{INFLUXDB_MEASUREMENT}`")
+            st.write(f"⏰ **Time Range:** `{time_window}`")
+            st.write(f"📈 **Max Records:** `{max_records}`")
+        
+        # Test data availability
+        test_data = get_influx_data(time_window, INFLUXDB_BUCKET, INFLUXDB_MEASUREMENT, INFLUXDB_ORG)
+        
+        if test_data is not None and not test_data.empty:
+            st.success(f"✅ Data available: {len(test_data)} records")
+            
+            with st.expander("🔍 Sample Data"):
+                st.dataframe(test_data.head(10))
+        else:
+            st.warning("⚠️ No data found in specified time range")
+        
+        client.close()
+        
     except Exception as e:
-        st.error(f"❌ Query failed: {e}")
+        st.error(f"❌ Connection failed: {e}")
+    
+    # API test
+    st.subheader("🔌 API Status")
+    try:
+        test_result = predict_anomaly(0.02, 5.0)
+        if 'error' in test_result:
+            st.error(f"❌ API Error: {test_result['error']}")
+        else:
+            st.success("✅ ML API is responding")
+    except Exception as e:
+        st.error(f"❌ API connection failed: {e}")
 
-except Exception as e:
-    st.error(f"❌ Failed to connect to InfluxDB: {e}")
-    st.info("Check your connection details and token permissions")
+# --- Auto-refresh for the entire app ---
+if auto_refresh and st.session_state.monitoring_active:
+    time.sleep(1)  # Small delay to prevent too frequent refreshes
+    st.rerun()
 
+# --- Footer ---
 st.markdown("---")
-st.write("**Debug complete.** Use the information above to identify and fix the data issues.")
+st.markdown("🚀 **DoS Anomaly Detection Dashboard** | Real-time network traffic monitoring and analysis")
