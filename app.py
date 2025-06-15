@@ -94,4 +94,8 @@ try:
             st.plotly_chart(fig, use_container_width=True)
 
             st.subheader("🔍 Prediction Table")
-            st.dataframe(df_pred[["timestamp", "inter_arrival_time", "packet_length", "reconstruction_error", "anomaly"]]
+            st.dataframe(df_pred[["timestamp", "inter_arrival_time", "packet_length", "reconstruction_error", "anomaly"]])
+        else:
+            st.info("No predictions returned.")
+except Exception as e:
+    st.error(f"Failed to fetch or process data: {e}")
