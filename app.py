@@ -15,7 +15,7 @@ st.set_page_config(page_title="🚀 DoS Detection Dashboard", layout="wide")
 # --- Configuration ---
 API_URL = "https://violabirech-dos-anomalies-detection.hf.space/predict"
 INFLUXDB_URL = "https://us-east-1-1.aws.cloud2.influxdata.com"
-INFLUXDB_TOKEN = "your-influxdb-token"
+INFLUXDB_TOKEN = "6gjE97dCC24hgOgWNmRXPqOS0pfc0pMSYeh5psL8e5u2T8jGeV1F17CU-U1z05if0jfTEmPRW9twNPSXN09SRQ=="
 INFLUXDB_ORG = "Anormally Detection"
 INFLUXDB_BUCKET = "realtime"
 INFLUXDB_MEASUREMENT = "network_traffic"
@@ -52,21 +52,22 @@ try:
     else:
         payloads = df[["inter_arrival_time", "packet_length"]].dropna().to_dict(orient="records")
         predictions = []
-        for (index, row), payload in zip(df.iterrows(), payloads):
-            try:
-                response = requests.post(API_URL, json=payload, timeout=8)
-                result = response.json()
-                result.update({
-                    "timestamp": row["_time"],
-                    "inter_arrival_time": payload["inter_arrival_time"],
-                    "packet_length": payload["packet_length"],
-                    "label": row.get("label")
-                })
-                predictions.append(result)
-            except Exception as e:
-                if debug_mode:
-                    st.error(f"API error at index {index}: {e}")
-                continue
+        with st.spinner("🔍 Detecting anomalies..."):
+            for (index, row), payload in zip(df.iterrows(), payloads):
+                try:
+                    response = requests.post(API_URL, json=payload, timeout=8)
+                    result = response.json()
+                    result.update({
+                        "timestamp": row["_time"],
+                        "inter_arrival_time": payload["inter_arrival_time"],
+                        "packet_length": payload["packet_length"],
+                        "label": row.get("label")
+                    })
+                    predictions.append(result)
+                except Exception as e:
+                    if debug_mode:
+                        st.error(f"API error at index {index}: {e}")
+                    continue
 
         if predictions:
             df_pred = pd.DataFrame(predictions)
