@@ -39,11 +39,6 @@ df = df.dropna().reset_index(drop=True)
 st.subheader("✅ Available columns from InfluxDB:")
 st.code(list(df.columns))
 required_fields = ["packet_length", "inter_arrival_time"]
-missing = [f for f in required_fields if f not in df.columns]
-
-if missing:
-    st.error(f"❌ Missing fields from InfluxDB data: {missing}")
-    st.stop()
 
 # --- Model: Isolation Forest ---
 X = df[required_fields]
