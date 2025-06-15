@@ -54,7 +54,18 @@ from(bucket: \"{INFLUXDB_BUCKET}\")
 """
 df = query_api.query_data_frame(query)
 df = pd.concat(df, ignore_index=True) if isinstance(df, list) else df
-df = df.dropna(subset=["packet_length", "inter_arrival_time"]).reset_index(drop=True)
+st.write("✅ Available columns from InfluxDB:")
+st.write(df.columns.tolist())
+
+expected_fields = ["packet_length", "inter_arrival_time"]
+missing_fields = [f for f in expected_fields if f not in df.columns]
+
+if missing_fields:
+    st.error(f"❌ Missing fields from InfluxDB data: {missing_fields}")
+    st.stop()
+
+df = df.dropna(subset=expected_fields).reset_index(drop=True)
+
 
 if df.empty:
     st.warning("No DoS data found in the selected time range.")
