@@ -116,3 +116,32 @@ with st.expander("ℹ️ Model Explanation"):
     - **Unique IPs** = Count of unique `source_ip`
     - **Model** = Isolation Forest trained on synthetic normal & attack samples
     """)
+
+# --- Visualizations ---
+if use_live and not df.empty:
+    st.markdown("### 📈 Real-Time Visualizations")
+
+    # Packet Rate over Time
+    df["timestamp"] = pd.to_datetime(df["_time"])
+    df["packet_rate"] = 1 / df["inter_arrival_time"].replace(0, np.nan)
+
+    with st.expander("📈 Packet Rate Over Time"):
+        fig1 = px.line(df.tail(100), x="timestamp", y="packet_rate",
+                       title="📈 Packet Rate Over Time",
+                       labels={"timestamp": "Timestamp", "packet_rate": "Packets/s"})
+        st.plotly_chart(fig1, use_container_width=True)
+
+    # Anomaly Scatter Plot
+    with st.expander("🧭 Anomaly Detection Scatter Plot"):
+        df["anomaly"] = model.predict(df[["packet_rate", "packet_length", "inter_arrival_time", "source_ip"]]
+                                      .assign(source_ip=df["source_ip"].astype("category").cat.codes)
+                                      .fillna(0))
+        fig2 = px.scatter(
+            df.tail(200),
+            x="packet_rate",
+            y="packet_length",
+            color=df["anomaly"].map({1: "Normal", -1: "Anomaly"}),
+            title="Packet Rate vs Packet Length",
+            labels={"packet_rate": "Rate", "packet_length": "Size"}
+        )
+        st.plotly_chart(fig2, use_container_width=True)
