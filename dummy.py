@@ -80,6 +80,9 @@ while True:
             st.markdown("### 📈 Real-Time Packet Rate")
             fig = px.line(df, x="timestamp", y="packet_rate", color="anomaly", title="Packet Rate Over Time")
             st.plotly_chart(fig, use_container_width=True)
+for i, fig in enumerate(figs):
+    st.plotly_chart(fig, key=f"chart_{i}")
+
 
         time.sleep(10)
 
