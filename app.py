@@ -628,12 +628,126 @@ with tab2:
                     st.warning(f"⚠️ No data found (query took {query_time:.2f}s)")
 
 # --- Tab 3: Manual Entry ---
+# --- Tab 3: Manual Entry ---
 with tab3:
     st.subheader("🔧 Manual Entry for Testing")
     
+    # Status indicators
     if st.session_state.api_status == "Offline":
         st.warning("⚠️ All APIs are offline. Using advanced mock predictions for testing.")
     elif use_mock_api:
         st.info("🧪 Mock API is enabled for testing purposes.")
-  elif st.session_state.monitoring_active:
-
+    elif st.session_state.monitoring_active:
+        st.info("🔄 Monitoring is currently active. Manual entry is available alongside live monitoring.")
+    else:
+        st.info("📝 Enter network traffic parameters manually to test the anomaly detection system.")
+    
+    # Manual input form
+    st.subheader("**Network Traffic Parameters**")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        manual_inter_arrival = st.number_input(
+            "Inter-arrival Time (seconds)", 
+            min_value=0.0001, 
+            max_value=10.0, 
+            value=0.02, 
+            step=0.001,
+            format="%.4f",
+            help="Time between packets. Lower values may indicate flooding attacks."
+        )
+        
+        manual_source_ip = st.text_input("Source IP", value="192.168.1.100")
+    
+    with col2:
+        manual_packet_length = st.number_input(
+            "Packet Length (bytes)", 
+            min_value=1.0, 
+            max_value=2000.0, 
+            value=800.0, 
+            step=1.0,
+            help="Packet size. Very large or small packets can be suspicious."
+        )
+        
+        manual_dest_ip = st.text_input("Destination IP", value="192.168.1.1")
+    
+    # Analysis section
+    col3, col4 = st.columns([1, 1])
+    
+    with col3:
+        if st.button("🔍 Analyze Traffic", type="primary"):
+            with st.spinner("Analyzing traffic pattern..."):
+                result = predict_anomaly(manual_inter_arrival, manual_packet_length)
+                
+                result.update({
+                    "timestamp": datetime.now(),
+                    "inter_arrival_time": manual_inter_arrival,
+                    "packet_length": manual_packet_length,
+                    "source_ip": manual_source_ip,
+                    "dest_ip": manual_dest_ip
+                })
+                
+                st.session_state.historical_data.append(result)
+                
+                # Display results
+                if result.get('anomaly', 0) == 1:
+                    st.error("🚨 **ANOMALY DETECTED**")
+                    st.write(f"**Type**: {result.get('anomaly_type', 'Unknown')}")
+                    st.write(f"**Reconstruction Error**: {result.get('reconstruction_error', 0):.4f}")
+                    st.write(f"**Risk Score**: {result.get('risk_score', 0):.4f}")
+                    
+                    # Add to alerts
+                    alert = {
+                        "timestamp": result["timestamp"],
+                        "severity": "HIGH" if result.get('reconstruction_error', 0) > thresh * 2 else "MEDIUM",
+                        "message": f"Manual entry detected anomaly: {result.get('anomaly_type', 'Unknown')}",
+                        "source_ip": manual_source_ip,
+                        "anomaly_type": result.get('anomaly_type', 'Unknown')
+                    }
+                    st.session_state.anomaly_alerts.append(alert)
+                else:
+                    st.success("✅ **NORMAL TRAFFIC**")
+                    st.write(f"**Confidence**: {result.get('confidence', 0):.2%}")
+    
+    with col4:
+        st.write("**Quick Test Scenarios:**")
+        
+        scenarios = {
+            "Normal Traffic": {"inter_arrival": 0.05, "packet_length": 800},
+            "DDoS Attack": {"inter_arrival": 0.0001, "packet_length": 1200},
+            "Slowloris": {"inter_arrival": 5.0, "packet_length": 200}
+        }
+        
+        for scenario_name, params in scenarios.items():
+            if st.button(f"🎯 Test {scenario_name}", key=f"test_{scenario_name.lower().replace(' ', '_')}"):
+                result = predict_anomaly(params["inter_arrival"], params["packet_length"])
+                result.update({
+                    "timestamp": datetime.now(),
+                    "inter_arrival_time": params["inter_arrival"],
+                    "packet_length": params["packet_length"],
+                    "source_ip": f"Test_{scenario_name.replace(' ', '_')}",
+                    "dest_ip": manual_dest_ip
+                })
+                st.session_state.historical_data.append(result)
+                
+                if result.get('anomaly', 0) == 1:
+                    st.error(f"🚨 {scenario_name}: {result.get('anomaly_type', 'Anomaly')}")
+                else:
+                    st.success(f"✅ {scenario_name}: Normal")
+    
+    # Recent manual entries display
+    if st.session_state.historical_data:
+        manual_entries = [d for d in st.session_state.historical_data[-10:] 
+                         if d.get('source_ip', '').startswith(('Manual', 'Test_', '192.168'))]
+        
+        if manual_entries:
+            st.subheader("**Recent Manual Test Results**")
+            df_manual = pd.DataFrame(manual_entries)
+            
+            display_cols = ['timestamp', 'source_ip', 'inter_arrival_time', 
+                           'packet_length', 'anomaly', 'anomaly_type']
+            available_cols = [col for col in display_cols if col in df_manual.columns]
+            
+            if available_cols:
+                st.dataframe(df_manual[available_cols].tail(5), use_container_width=True)
