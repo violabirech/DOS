@@ -719,4 +719,7 @@ with tab5:
             if result['success']:
                 st.success(f"✅ Measurement test passed ({result['elapsed']:.2f}s, {result['records']} records)")
             else:
-                st.error(f"❌ Measurement test failed: {
+                st.error(f"❌ Measurement test failed: {result['error']}")
+    
+    # Additional diagnostic tests
+    col3,
