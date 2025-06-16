@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import time
+import uuid
 from sklearn.ensemble import IsolationForest
 from influxdb_client import InfluxDBClient
 import plotly.express as px
@@ -12,7 +13,7 @@ st.title("🚨 Real-Time DoS Detection Dashboard")
 
 # --- InfluxDB Setup ---
 INFLUXDB_URL = "https://us-east-1-1.aws.cloud2.influxdata.com"
-INFLUXDB_TOKEN = "DfmvA8hl5EeOcpR-d6c_ep6dRtSRbEcEM_Zqp8-1746dURtVqMDGni4rRNQbHouhqmdC7t9Kj6Y-AyOjbBg-zg=="  # <-- Replace with your actual token
+INFLUXDB_TOKEN = "your_token_here"  # Replace with your actual token
 INFLUXDB_ORG = "Anormally Detection"
 INFLUXDB_BUCKET = "realtime"
 MEASUREMENT = "network_traffic"
@@ -44,7 +45,7 @@ while True:
 
         if df.empty:
             st.warning("⚠️ No recent data found in InfluxDB.")
-            time.sleep(5)
+            time.sleep(60)
             continue
 
         # --- Preprocess ---
@@ -55,7 +56,7 @@ while True:
         features = ["packet_rate", "packet_length", "inter_arrival_time"]
         X = df[features]
 
-        # --- Fit or Load Model (demo: refit each loop) ---
+        # --- Fit Model (demo: refit each loop) ---
         model.fit(X)
         df["anomaly_score"] = model.decision_function(X)
         df["anomaly"] = model.predict(X)
@@ -76,13 +77,15 @@ while True:
             else:
                 st.success("🟢 No Anomaly Detected")
 
-            # --- Line Chart with Unique Key ---
+            # --- Line Chart with unique key ---
             st.markdown("### 📈 Real-Time Packet Rate")
             fig = px.line(df, x="timestamp", y="packet_rate", color="anomaly", title="Packet Rate Over Time")
-            st.plotly_chart(fig, use_container_width=True, key="realtime_packet_rate_chart")
+            chart_key = str(uuid.uuid4())  # unique key each loop
+            st.plotly_chart(fig, use_container_width=True, key=f"packet_rate_{chart_key}")
 
-        time.sleep(10)
+        # --- Wait to avoid rate limit ---
+        time.sleep(60)
 
     except Exception as e:
         st.error(f"💥 Error: {e}")
-        time.sleep(10)
+        time.sleep(60)
