@@ -11,20 +11,19 @@ INFLUXDB_ORG = "Anormally Detection"
 INFLUXDB_BUCKET = "realtime"
 MEASUREMENT = "network_traffic"
 
-# --- Streamlit Setup ---
+# --- Page Setup ---
 st.set_page_config(page_title="🛡️ DoS Anomaly Detection", layout="wide")
-st.title("🛡️ Real-Time DoS Anomaly Detection Dashboard")
-st.markdown("Monitor traffic manually or using live data from InfluxDB. An Isolation Forest model is used to detect anomalies.")
+st.title("🛡️ Real-Time DoS Detection Dashboard")
+st.markdown("Detect anomalies using InfluxDB features: packet length, arrival time, and source IP diversity.")
 
-# --- Manual Input Controls ---
-st.sidebar.header("Manual Input / Live Toggle")
-syn_count = st.sidebar.number_input("SYN Flag Count (per minute)", 0, 10000, value=500, step=100)
-packet_rate = st.sidebar.number_input("Packet Rate (packets/sec)", 0.0, 10000.0, value=200.0, step=10.0)
-avg_packet_size = st.sidebar.number_input("Average Packet Size (bytes)", 0, 9000, value=512, step=64)
-unique_ips = st.sidebar.number_input("Unique Source IPs", 0, 5000, value=50, step=10)
-use_live = st.sidebar.checkbox("📡 Use Live Data from InfluxDB", value=False)
+# --- Manual Input Section ---
+st.sidebar.header("Manual Input or Live Mode")
+inter_arrival = st.sidebar.number_input("Inter-Arrival Time (s)", min_value=0.00001, value=0.05)
+packet_length = st.sidebar.number_input("Avg Packet Length (bytes)", min_value=1, value=500)
+unique_ips = st.sidebar.number_input("Unique Source IPs", min_value=1, value=30)
+use_live = st.sidebar.checkbox("📡 Use Live InfluxDB Data", value=True)
 
-# --- InfluxDB Query (No _time) ---
+# --- Fetch InfluxDB Data ---
 @st.cache_data(ttl=30)
 def fetch_live_data():
     try:
@@ -34,7 +33,7 @@ def fetch_live_data():
         from(bucket: "{INFLUXDB_BUCKET}")
         |> range(start: -5m)
         |> filter(fn: (r) => r["_measurement"] == "{MEASUREMENT}")
-        |> pivot(rowKey:["_field"], columnKey: ["_field"], valueColumn: "_value")
+        |> keep(columns: ["inter_arrival_time", "packet_length", "source_ip"])
         '''
         df = query_api.query_data_frame(query)
         client.close()
@@ -43,90 +42,72 @@ def fetch_live_data():
         st.error(f"❌ InfluxDB Error: {e}")
         return pd.DataFrame()
 
-# --- Train Isolation Forest Model Inline ---
+# --- Train Isolation Forest Model ---
 @st.cache_resource
 def train_model():
-    np.random.seed(42)
     normal = pd.DataFrame({
-        "syn_count": np.random.poisson(200, 300),
-        "packet_rate": np.random.normal(100, 15, 300),
-        "avg_packet_size": np.random.normal(512, 100, 300),
+        "packet_rate": np.random.normal(50, 10, 300),
+        "avg_packet_size": np.random.normal(500, 100, 300),
         "unique_ips": np.random.poisson(20, 300)
     })
     anomalies = pd.DataFrame({
-        "syn_count": np.random.randint(2000, 5000, 20),
-        "packet_rate": np.random.uniform(1000, 5000, 20),
+        "packet_rate": np.random.uniform(1000, 2000, 20),
         "avg_packet_size": np.random.uniform(1000, 2000, 20),
         "unique_ips": np.random.randint(500, 1000, 20)
     })
-    full = pd.concat([normal, anomalies], ignore_index=True)
+    combined = pd.concat([normal, anomalies])
     model = IsolationForest(contamination=0.05, random_state=42)
-    model.fit(full)
+    model.fit(combined)
     return model
 
 model = train_model()
 
-# --- Use Live Data (if toggled on) ---
+# --- Use Live Data or Manual ---
 if use_live:
-    st.subheader("📡 Live Traffic Snapshot from InfluxDB")
+    st.subheader("📡 Live Traffic Data from InfluxDB")
     df = fetch_live_data()
-    
+
     if df.empty:
-        st.warning("⚠️ No recent data in InfluxDB for measurement `network_traffic`.")
+        st.warning("⚠️ No live data found.")
         st.stop()
-    
-    # Preview
-    with st.expander("🔍 Preview Retrieved Records"):
-        st.dataframe(df.tail(100))
-    
-    # Validate required fields
-    for col in ["flags", "packet_size", "source_ip"]:
-        if col not in df.columns:
-            st.error(f"❌ Required field `{col}` not found in InfluxDB data.")
-            st.stop()
 
-    # Feature extraction from live data
-    syn_count = df[df["flags"] == "SYN"].shape[0]
-    avg_packet_size = df["packet_size"].mean()
+    with st.expander("🔍 View Raw Data"):
+        st.dataframe(df.tail(50))
+
+    # Compute model inputs
+    mean_arrival = df["inter_arrival_time"].replace(0, np.nan).mean()
+    packet_length = df["packet_length"].mean()
     unique_ips = df["source_ip"].nunique()
-    packet_rate = len(df) / 300  # over 5 minutes
+    packet_rate = 1 / mean_arrival if mean_arrival and mean_arrival > 0 else 0
 
-# --- Prepare for Prediction ---
-features = np.array([[syn_count, packet_rate, avg_packet_size, unique_ips]])
-prediction = model.predict(features)[0]
-score = model.decision_function(features)[0]
+else:
+    packet_rate = 1 / inter_arrival if inter_arrival > 0 else 0
 
-# --- Output Results ---
+# --- Inference ---
+X = np.array([[packet_rate, packet_length, unique_ips]])
+prediction = model.predict(X)[0]
+score = model.decision_function(X)[0]
+
+# --- Output ---
 st.subheader("🔍 Anomaly Detection Result")
 st.metric("Anomaly Score", f"{score:.4f}")
 if prediction == -1:
-    st.error("🚨 Anomaly Detected: Potential DoS Attack")
+    st.error("🚨 Anomaly Detected: Possible DoS Attack")
 else:
-    st.success("✅ Normal Traffic Pattern")
+    st.success("✅ Normal Behavior")
 
-# --- Summary Display ---
+# --- Feature Summary ---
 st.markdown("### 📊 Feature Breakdown")
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("SYN Count", int(syn_count))
-col2.metric("Packet Rate", f"{packet_rate:.2f} pkt/s")
-col3.metric("Avg Packet Size", f"{avg_packet_size:.1f} bytes")
-col4.metric("Unique IPs", unique_ips)
+col1, col2, col3 = st.columns(3)
+col1.metric("Packet Rate", f"{packet_rate:.2f} pkt/s")
+col2.metric("Packet Size", f"{packet_length:.1f} bytes")
+col3.metric("Unique IPs", unique_ips)
 
-# --- Explainer ---
-with st.expander("ℹ️ How This Works"):
+# --- Explain ---
+with st.expander("ℹ️ Model Info"):
     st.markdown("""
-    This dashboard detects anomalies in network traffic using a trained **Isolation Forest** model.
-    
-    **Features Used**:
-    - `SYN Flag Count`
-    - `Packet Rate`
-    - `Average Packet Size`
-    - `Unique Source IPs`
-
-    **Live Data** is retrieved from the `network_traffic` measurement in InfluxDB.
-    The model flags:
-    - `1` as normal
-    - `-1` as anomaly (potential DoS)
-
-    All training and inference happens inside the app.
+    - **packet_rate** = 1 / average inter-arrival time
+    - **packet_length** = mean bytes from `packet_length`
+    - **unique_ips** = distinct values of `source_ip`
+    - Model: Isolation Forest trained on synthetic normal & abnormal traffic
     """)
