@@ -24,10 +24,10 @@ if st.button("🔄 Refresh Now"):
         client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
         query_api = client.query_api()
 
-        # Query data (range: last 5 hours)
+        # Query data (range: last 10 hours)
         query = f'''
         from(bucket: "{INFLUXDB_BUCKET}")
-          |> range(start: -5h)
+          |> range(start: -10h)
           |> filter(fn: (r) => r["_measurement"] == "{MEASUREMENT}")
           |> filter(fn: (r) => r["_field"] == "packet_rate" or r["_field"] == "packet_length" or r["_field"] == "inter_arrival_time")
           |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
