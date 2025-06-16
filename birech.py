@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import uuid
-import time
 from sklearn.ensemble import IsolationForest
 from influxdb_client import InfluxDBClient
 import plotly.express as px
@@ -13,87 +12,77 @@ st.title("🚨 Real-Time DoS Detection Dashboard")
 
 # --- InfluxDB Setup ---
 INFLUXDB_URL = "https://us-east-1-1.aws.cloud2.influxdata.com"
-INFLUXDB_TOKEN = "DfmvA8hl5EeOcpR-d6c_ep6dRtSRbEcEM_Zqp8-1746dURtVqMDGni4rRNQbHouhqmdC7t9Kj6Y-AyOjbBg-zg=="  # ← Replace with your token
+INFLUXDB_TOKEN = "DfmvA8hl5EeOcpR-d6c_ep6dRtSRbEcEM_Zqp8-1746dURtVqMDGni4rRNQbHouhqmdC7t9Kj6Y-AyOjbBg-zg=="  # Replace with your token
 INFLUXDB_ORG = "Anormally Detection"
 INFLUXDB_BUCKET = "realtime"
 MEASUREMENT = "network_traffic"
 
-# --- Connect to InfluxDB ---
-client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
-query_api = client.query_api()
+# --- Refresh Button ---
+if st.button("🔄 Refresh Now"):
+    try:
+        # Connect to InfluxDB
+        client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
+        query_api = client.query_api()
 
-# --- Query Data from InfluxDB ---
-query = f'''
-from(bucket: "{INFLUXDB_BUCKET}")
-  |> range(start: -12h)
-  |> filter(fn: (r) => r["_measurement"] == "{MEASUREMENT}")
-  |> filter(fn: (r) => r["_field"] == "packet_rate" or r["_field"] == "packet_length" or r["_field"] == "inter_arrival_time")
-  |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
-  |> sort(columns: ["_time"], desc: false)
-'''
+        # Query data (range: last 5 hours)
+        query = f'''
+        from(bucket: "{INFLUXDB_BUCKET}")
+          |> range(start: -5h)
+          |> filter(fn: (r) => r["_measurement"] == "{MEASUREMENT}")
+          |> filter(fn: (r) => r["_field"] == "packet_rate" or r["_field"] == "packet_length" or r["_field"] == "inter_arrival_time")
+          |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
+          |> sort(columns: ["_time"], desc: false)
+        '''
 
-try:
-    df = query_api.query_data_frame(query)
+        df = query_api.query_data_frame(query)
 
-    if df.empty:
-        st.warning("⚠️ No data found in the last hour.")
-    else:
-        # --- Preprocess ---
-        df = df.rename(columns={"_time": "timestamp"})
-        df = df[["timestamp", "packet_rate", "packet_length", "inter_arrival_time"]].dropna()
-        features = ["packet_rate", "packet_length", "inter_arrival_time"]
-        X = df[features]
-
-        # --- Train Isolation Forest ---
-        model = IsolationForest(n_estimators=100, contamination=0.15, random_state=42)
-        model.fit(X)
-
-        # --- Predict Anomalies ---
-        df["anomaly_score"] = model.decision_function(X)
-        df["anomaly"] = (model.predict(X) == -1).astype(int)  # 1 = anomaly
-
-        # --- Show Metrics ---
-        latest_row = df.iloc[-1]
-        st.markdown("### 🔬 Feature Snapshot")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("📦 Packet Rate", f"{latest_row['packet_rate']:.2f}")
-        col2.metric("📏 Packet Length", f"{latest_row['packet_length']:.1f}")
-        col3.metric("⏱️ Inter-Arrival", f"{latest_row['inter_arrival_time']:.4f} s")
-
-        if latest_row["anomaly"] == 1:
-            st.error("🔴 Anomaly Detected: Possible DoS Attack")
+        if df.empty:
+            st.warning("⚠️ No recent data found.")
         else:
-            st.success("🟢 No Anomaly Detected")
+            # Preprocess
+            df = df.rename(columns={"_time": "timestamp"})
+            df = df[["timestamp", "packet_rate", "packet_length", "inter_arrival_time"]].dropna()
+            X = df[["packet_rate", "packet_length", "inter_arrival_time"]]
 
-        # --- Real-Time Packet Rate ---
-        st.markdown("### 📈 Real-Time Packet Rate")
-        fig = px.line(df, x="timestamp", y="packet_rate", color="anomaly", title="Packet Rate Over Time")
-        st.plotly_chart(fig, use_container_width=True, key=f"packet_rate_{uuid.uuid4()}")
+            # Train and predict
+            model = IsolationForest(n_estimators=100, contamination=0.15, random_state=42)
+            model.fit(X)
+            df["anomaly_score"] = model.decision_function(X)
+            df["anomaly"] = (model.predict(X) == -1).astype(int)
 
-        # --- Anomaly Count Summary ---
-        st.markdown("### 📊 Anomaly Count Summary")
-        anomaly_counts = df["anomaly"].value_counts().rename(index={0: "Normal", 1: "Anomaly"}).reset_index()
-        anomaly_counts.columns = ["Label", "Count"]
-        bar_fig = px.bar(anomaly_counts, x="Label", y="Count", color="Label", title="Anomaly vs Normal Count")
-        st.plotly_chart(bar_fig, use_container_width=True, key=f"anomaly_bar_{uuid.uuid4()}")
+            # Show feature snapshot
+            latest_row = df.iloc[-1]
+            st.markdown("### 🔬 Feature Snapshot")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("📦 Packet Rate", f"{latest_row['packet_rate']:.2f}")
+            col2.metric("📏 Packet Length", f"{latest_row['packet_length']:.1f}")
+            col3.metric("⏱️ Inter-Arrival", f"{latest_row['inter_arrival_time']:.4f} s")
 
-        # --- Avg. Packet Length by Anomaly ---
-        st.markdown("### 📏 Avg. Packet Length by Traffic Type")
-        avg_packet_length = df.groupby("anomaly")["packet_length"].mean().reset_index()
-        avg_packet_length["anomaly"] = avg_packet_length["anomaly"].map({0: "Normal", 1: "Anomaly"})
-        length_fig = px.bar(avg_packet_length, x="anomaly", y="packet_length", color="anomaly",
-                            title="Average Packet Length: Normal vs Anomaly")
-        st.plotly_chart(length_fig, use_container_width=True, key=f"packet_length_bar_{uuid.uuid4()}")
+            if latest_row["anomaly"] == 1:
+                st.error("🔴 Anomaly Detected: Possible DoS Attack")
+            else:
+                st.success("🟢 No Anomaly Detected")
 
-        # --- Inter-Arrival Time Trend ---
-        st.markdown("### ⏱️ Inter-Arrival Time Trend")
-        iat_fig = px.line(df, x="timestamp", y="inter_arrival_time", color="anomaly",
-                          title="Inter-Arrival Time Over Time")
-        st.plotly_chart(iat_fig, use_container_width=True, key=f"inter_arrival_line_{uuid.uuid4()}")
+            # Charts
+            st.markdown("### 📈 Packet Rate Over Time")
+            fig = px.line(df, x="timestamp", y="packet_rate", color="anomaly", title="Packet Rate")
+            st.plotly_chart(fig, use_container_width=True, key=f"line1_{uuid.uuid4()}")
 
-except Exception as e:
-    st.error(f"💥 Error: {e}")
+            st.markdown("### 📊 Anomaly Count")
+            counts = df["anomaly"].value_counts().rename(index={0: "Normal", 1: "Anomaly"}).reset_index()
+            counts.columns = ["Label", "Count"]
+            st.plotly_chart(px.bar(counts, x="Label", y="Count", color="Label"), use_container_width=True, key=f"bar1_{uuid.uuid4()}")
 
-# --- Periodic Refresh ---
-time.sleep(60)
-st.rerun()
+            st.markdown("### 📏 Avg. Packet Length")
+            avg_len = df.groupby("anomaly")["packet_length"].mean().reset_index()
+            avg_len["anomaly"] = avg_len["anomaly"].map({0: "Normal", 1: "Anomaly"})
+            st.plotly_chart(px.bar(avg_len, x="anomaly", y="packet_length", color="anomaly", title="Avg. Packet Length"), use_container_width=True)
+
+            st.markdown("### ⏱️ Inter-Arrival Time Trend")
+            st.plotly_chart(px.line(df, x="timestamp", y="inter_arrival_time", color="anomaly", title="Inter-Arrival Time"), use_container_width=True, key=f"line2_{uuid.uuid4()}")
+
+    except Exception as e:
+        st.error(f"💥 Error: {e}")
+
+else:
+    st.info("Click the **Refresh Now** button above to load the latest data.")
