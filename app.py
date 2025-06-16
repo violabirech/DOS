@@ -1,10 +1,3 @@
-**The error is occurring because you're trying to run Gradio inside Streamlit, which causes port conflicts. Here are the solutions:**
-
-## **Solution 1: Fixed Streamlit App (Remove Gradio Launch)**
-
-Replace your current Streamlit app with this corrected version:
-
-```python
 import streamlit as st
 
 # --- Page Setup - MUST BE FIRST STREAMLIT COMMAND ---
@@ -49,119 +42,7 @@ if 'api_status' not in st.session_state:
 if 'working_api_url' not in st.session_state:
     st.session_state.working_api_url = None
 
-# --- Sidebar Controls ---
-st.sidebar.title("🔧 Controls")
-
-# API Configuration
-st.sidebar.markdown("---")
-st.sidebar.subheader("🔌 API Configuration")
-use_mock_api = st.sidebar.checkbox("Force Mock API (for testing)", value=False)
-
-if st.sidebar.button("🔍 Test API Connection"):
-    st.sidebar.write("Testing API...")
-    working_url = test_all_apis()
-    if working_url:
-        st.sidebar.success(f"✅ Found working API")
-        st.session_state.working_api_url = working_url
-        st.session_state.api_status = "Online"
-    else:
-        st.sidebar.error("❌ No working APIs found")
-        st.session_state.api_status = "Offline"
-
-# Auto-refresh settings
-auto_refresh = st.sidebar.checkbox("Auto Refresh", value=False)
-refresh_interval = st.sidebar.selectbox("Refresh Interval", [5, 10, 15, 30, 60], index=1)
-
-time_window = st.sidebar.selectbox("Time Range", ["-5m", "-15m", "-1h", "-6h", "-12h", "-1d", "-7d", "-30d"], index=0)
-thresh = st.sidebar.slider("Anomaly Threshold", 0.01, 1.0, 0.1, 0.01)
-max_records = st.sidebar.slider("Max Records to Process", 10, 100, 25, 10)
-
-# Performance settings
-st.sidebar.markdown("---")
-st.sidebar.subheader("⚡ Performance Settings")
-query_timeout = st.sidebar.slider("Query Timeout (seconds)", 5, 60, 15, 5)
-cache_ttl = st.sidebar.slider("Cache TTL (seconds)", 30, 300, 60, 30)
-
-# Monitoring controls
-st.sidebar.markdown("---")
-st.sidebar.subheader("🎛️ Monitoring Controls")
-
-col1, col2 = st.sidebar.columns(2)
-with col1:
-    if st.button("▶️ Start", type="primary"):
-        st.session_state.monitoring_active = True
-with col2:
-    if st.button("⏹️ Stop"):
-        st.session_state.monitoring_active = False
-
-# Clear data button
-if st.sidebar.button("🗑️ Clear History"):
-    st.session_state.historical_data = []
-    st.session_state.anomaly_alerts = []
-    st.session_state.query_performance = []
-    st.rerun()
-
-# Configuration override
-st.sidebar.markdown("---")
-st.sidebar.subheader("🔧 Configuration Override")
-custom_bucket = st.sidebar.text_input("Bucket Name", value=INFLUXDB_BUCKET)
-custom_measurement = st.sidebar.text_input("Measurement Name", value=INFLUXDB_MEASUREMENT)
-custom_org = st.sidebar.text_input("Organization", value=INFLUXDB_ORG)
-
-# Update variables if overridden
-if custom_bucket:
-    INFLUXDB_BUCKET = custom_bucket
-if custom_measurement:
-    INFLUXDB_MEASUREMENT = custom_measurement
-if custom_org:
-    INFLUXDB_ORG = custom_org
-
-# --- Title ---
-st.title("🚀 Real-Time DoS Anomaly Detection Dashboard")
-
-# Status indicator
-status_col1, status_col2, status_col3, status_col4 = st.columns([1, 1, 1, 2])
-with status_col1:
-    if st.session_state.monitoring_active:
-        st.success("🟢 ACTIVE")
-    else:
-        st.error("🔴 STOPPED")
-
-with status_col2:
-    st.info(f"⏱️ Refresh: {refresh_interval}s")
-
-with status_col3:
-    st.info(f"📊 Records: {max_records}")
-
-with status_col4:
-    if st.session_state.historical_data:
-        last_update = max([d['timestamp'] for d in st.session_state.historical_data])
-        st.write(f"📅 Last Update: {last_update}")
-
-# API Status indicator
-api_status_col1, api_status_col2, api_status_col3 = st.columns([1, 1, 2])
-with api_status_col1:
-    if st.session_state.api_status == "Online":
-        st.success("🟢 API Online")
-    elif st.session_state.api_status == "Offline":
-        st.error("🔴 API Offline")
-    else:
-        st.warning("🟡 API Unknown")
-
-with api_status_col2:
-    if use_mock_api:
-        st.info("🧪 Mock Mode")
-    else:
-        st.info("🔗 Live Mode")
-
-with api_status_col3:
-    if st.session_state.working_api_url:
-        st.write(f"📡 Using: {st.session_state.working_api_url}")
-
-# --- Navigation Tabs ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏠 Overview", "📊 Live Stream", "⚙️ Manual Entry", "📈 Metrics & Alerts", "🔧 Diagnostics"])
-
-# --- Enhanced Helper Functions ---
+# --- Helper Functions ---
 def mock_predict_anomaly(inter_arrival_time, packet_length):
     """Advanced mock API that simulates realistic DoS detection"""
     np.random.seed(int((inter_arrival_time * 1000 + packet_length) % 100))
@@ -464,6 +345,118 @@ def run_diagnostic_query(query_name, query, org, timeout=10):
             'records': 0
         }
 
+# --- Sidebar Controls ---
+st.sidebar.title("🔧 Controls")
+
+# API Configuration
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔌 API Configuration")
+use_mock_api = st.sidebar.checkbox("Force Mock API (for testing)", value=False)
+
+if st.sidebar.button("🔍 Test API Connection"):
+    st.sidebar.write("Testing API...")
+    working_url = test_all_apis()
+    if working_url:
+        st.sidebar.success(f"✅ Found working API")
+        st.session_state.working_api_url = working_url
+        st.session_state.api_status = "Online"
+    else:
+        st.sidebar.error("❌ No working APIs found")
+        st.session_state.api_status = "Offline"
+
+# Auto-refresh settings
+auto_refresh = st.sidebar.checkbox("Auto Refresh", value=False)
+refresh_interval = st.sidebar.selectbox("Refresh Interval", [5, 10, 15, 30, 60], index=1)
+
+time_window = st.sidebar.selectbox("Time Range", ["-5m", "-15m", "-1h", "-6h", "-12h", "-1d", "-7d", "-30d"], index=0)
+thresh = st.sidebar.slider("Anomaly Threshold", 0.01, 1.0, 0.1, 0.01)
+max_records = st.sidebar.slider("Max Records to Process", 10, 100, 25, 10)
+
+# Performance settings
+st.sidebar.markdown("---")
+st.sidebar.subheader("⚡ Performance Settings")
+query_timeout = st.sidebar.slider("Query Timeout (seconds)", 5, 60, 15, 5)
+cache_ttl = st.sidebar.slider("Cache TTL (seconds)", 30, 300, 60, 30)
+
+# Monitoring controls
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎛️ Monitoring Controls")
+
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    if st.button("▶️ Start", type="primary"):
+        st.session_state.monitoring_active = True
+with col2:
+    if st.button("⏹️ Stop"):
+        st.session_state.monitoring_active = False
+
+# Clear data button
+if st.sidebar.button("🗑️ Clear History"):
+    st.session_state.historical_data = []
+    st.session_state.anomaly_alerts = []
+    st.session_state.query_performance = []
+    st.rerun()
+
+# Configuration override
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔧 Configuration Override")
+custom_bucket = st.sidebar.text_input("Bucket Name", value=INFLUXDB_BUCKET)
+custom_measurement = st.sidebar.text_input("Measurement Name", value=INFLUXDB_MEASUREMENT)
+custom_org = st.sidebar.text_input("Organization", value=INFLUXDB_ORG)
+
+# Update variables if overridden
+if custom_bucket:
+    INFLUXDB_BUCKET = custom_bucket
+if custom_measurement:
+    INFLUXDB_MEASUREMENT = custom_measurement
+if custom_org:
+    INFLUXDB_ORG = custom_org
+
+# --- Title ---
+st.title("🚀 Real-Time DoS Anomaly Detection Dashboard")
+
+# Status indicator
+status_col1, status_col2, status_col3, status_col4 = st.columns([1, 1, 1, 2])
+with status_col1:
+    if st.session_state.monitoring_active:
+        st.success("🟢 ACTIVE")
+    else:
+        st.error("🔴 STOPPED")
+
+with status_col2:
+    st.info(f"⏱️ Refresh: {refresh_interval}s")
+
+with status_col3:
+    st.info(f"📊 Records: {max_records}")
+
+with status_col4:
+    if st.session_state.historical_data:
+        last_update = max([d['timestamp'] for d in st.session_state.historical_data])
+        st.write(f"📅 Last Update: {last_update}")
+
+# API Status indicator
+api_status_col1, api_status_col2, api_status_col3 = st.columns([1, 1, 2])
+with api_status_col1:
+    if st.session_state.api_status == "Online":
+        st.success("🟢 API Online")
+    elif st.session_state.api_status == "Offline":
+        st.error("🔴 API Offline")
+    else:
+        st.warning("🟡 API Unknown")
+
+with api_status_col2:
+    if use_mock_api:
+        st.info("🧪 Mock Mode")
+    else:
+        st.info("🔗 Live Mode")
+
+with api_status_col3:
+    if st.session_state.working_api_url:
+        st.write(f"📡 Using: {st.session_state.working_api_url}")
+
+# --- Navigation Tabs ---
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏠 Overview", "📊 Live Stream", "⚙️ Manual Entry", "📈 Metrics & Alerts", "🔧 Diagnostics"])
+
 # --- Tab 1: Overview ---
 with tab1:
     st.subheader("📊 Analytical Dashboard")
@@ -719,4 +712,7 @@ with tab2:
         
         # Manual mode data fetch
         if st.button("📊 Fetch Data Now", type="primary"):
-            with st.spinner("Fet
+            with st.spinner("Fetching data..."):
+                result = get_influx_data_optimized(
+                    time_window, 
+                    INFLUXDB_BUCKET,
