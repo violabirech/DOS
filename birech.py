@@ -5,11 +5,6 @@ import uuid
 from sklearn.ensemble import IsolationForest
 from influxdb_client import InfluxDBClient
 import plotly.express as px
-from streamlit_autorefresh import st_autorefresh
-
-# This will refresh the app every 10 seconds
-st_autorefresh(interval=10 * 1000, key="refresh")
-
 
 # --- Streamlit Page Config ---
 st.set_page_config(page_title="Real-Time DoS Anomaly Detection", layout="wide")
