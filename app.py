@@ -635,4 +635,5 @@ with tab3:
         st.warning("⚠️ All APIs are offline. Using advanced mock predictions for testing.")
     elif use_mock_api:
         st.info("🧪 Mock API is enabled for testing purposes.")
-    elif st.session_state
+  elif st.session_state.monitoring_active:
+
