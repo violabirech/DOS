@@ -715,4 +715,5 @@ with tab2:
             with st.spinner("Fetching data..."):
                 result = get_influx_data_optimized(
                     time_window, 
-                    INFLUXDB_BUCKET,
+                    INFLUXDB_BUCKET, 
+                    INFLUXDB_
