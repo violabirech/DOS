@@ -722,4 +722,4 @@ with tab5:
                 st.error(f"❌ Measurement test failed: {result['error']}")
     
     # Additional diagnostic tests
-    col3,
+    st.write
