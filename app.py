@@ -31,7 +31,7 @@ def fetch_live_data():
         query_api = client.query_api()
         query = f'''
         from(bucket: "{INFLUXDB_BUCKET}")
-        |> range(start: -5m)
+        |> range(start: -1100h)
         |> filter(fn: (r) => r["_measurement"] == "{MEASUREMENT}")
         |> keep(columns: ["inter_arrival_time", "packet_length", "source_ip"])
         '''
