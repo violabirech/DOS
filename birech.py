@@ -8,7 +8,7 @@ import plotly.express as px
 
 # --- Streamlit Page Config ---
 st.set_page_config(page_title="Real-Time DoS Anomaly Detection", layout="wide")
-st.title("🚨 Real-Time DoS Detection Dashboard")
+st.title(" Real-Time DoS Detection Dashboard")
 
 # --- InfluxDB Setup ---
 INFLUXDB_URL = "https://us-east-1-1.aws.cloud2.influxdata.com"
@@ -37,7 +37,7 @@ if st.button("🔄 Refresh Now"):
         df = query_api.query_data_frame(query)
 
         if df.empty:
-            st.warning("⚠️ No recent data found.")
+            st.warning("No recent data found.")
         else:
             # Preprocess
             df = df.rename(columns={"_time": "timestamp"})
@@ -54,14 +54,14 @@ if st.button("🔄 Refresh Now"):
             latest_row = df.iloc[-1]
             st.markdown("### 🔬 Feature Snapshot")
             col1, col2, col3 = st.columns(3)
-            col1.metric("📦 Packet Rate", f"{latest_row['packet_rate']:.2f}")
-            col2.metric("📏 Packet Length", f"{latest_row['packet_length']:.1f}")
-            col3.metric("⏱️ Inter-Arrival", f"{latest_row['inter_arrival_time']:.4f} s")
+            col1.metric("Packet Rate", f"{latest_row['packet_rate']:.2f}")
+            col2.metric("Packet Length", f"{latest_row['packet_length']:.1f}")
+            col3.metric("Inter-Arrival", f"{latest_row['inter_arrival_time']:.4f} s")
 
             if latest_row["anomaly"] == 1:
-                st.error("🔴 Anomaly Detected: Possible DoS Attack")
+                st.error("Anomaly Detected: Possible DoS Attack")
             else:
-                st.success("🟢 No Anomaly Detected")
+                st.success("No Anomaly Detected")
 
             # Charts
             st.markdown("### 📈 Packet Rate Over Time")
@@ -82,7 +82,7 @@ if st.button("🔄 Refresh Now"):
             st.plotly_chart(px.line(df, x="timestamp", y="inter_arrival_time", color="anomaly", title="Inter-Arrival Time"), use_container_width=True, key=f"line2_{uuid.uuid4()}")
 
     except Exception as e:
-        st.error(f"💥 Error: {e}")
+        st.error(f" Error: {e}")
 
 else:
     st.info("Click the **Refresh Now** button above to load the latest data.")
