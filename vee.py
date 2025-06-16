@@ -7,21 +7,21 @@ import plotly.express as px
 
 # --- InfluxDB Configuration ---
 INFLUXDB_URL = "https://us-east-1-1.aws.cloud2.influxdata.com"
-INFLUXDB_TOKEN = "your_token_here"
+INFLUXDB_TOKEN = "6gjE97dCC24hgOgWNmRXPqOS0pfc0pMSYeh5psL8e5u2T8jGeV1F17CU-U1z05if0jfTEmPRW9twNPSXN09SRQ=="
 INFLUXDB_ORG = "Anormally Detection"
 INFLUXDB_BUCKET = "realtime"
 MEASUREMENT = "network_traffic"
 
 # --- Page Setup ---
 st.set_page_config(page_title="🚨 DoS Detection", layout="wide")
-st.title("🚨 Real-Time DoS Anomaly Detection")
+st.title("🚨 Real-Time DoS Anomaly Detection Dashboard")
 
-# --- Sidebar Controls ---
-st.sidebar.header("Controls")
-use_live = st.sidebar.checkbox("📡 Use Live InfluxDB Data", value=False)
-inter_arrival = st.sidebar.number_input("🕒 Inter-Arrival Time (s)", min_value=0.0001, value=0.05)
-packet_length = st.sidebar.number_input("📦 Packet Length (bytes)", min_value=1, value=500)
-unique_ips = st.sidebar.number_input("🌐 Unique Source IPs", min_value=1, value=30)
+# --- Sidebar ---
+st.sidebar.header("Settings")
+use_live = st.sidebar.checkbox("📡 Use Live InfluxDB Data", value=True)
+inter_arrival = st.sidebar.number_input("Inter-Arrival Time (s)", min_value=0.00001, value=0.05)
+packet_length = st.sidebar.number_input("Avg Packet Length (bytes)", min_value=1, value=500)
+unique_ips = st.sidebar.number_input("Unique Source IPs", min_value=1, value=30)
 anomaly_threshold = st.sidebar.slider("Anomaly Score Threshold", -0.5, 0.5, 0.0, 0.01)
 
 # --- Train Model ---
@@ -31,107 +31,108 @@ def train_model():
         "packet_rate": np.random.normal(50, 10, 300),
         "packet_length": np.random.normal(500, 50, 300),
         "inter_arrival_time": np.random.normal(0.05, 0.01, 300),
-        "unique_ips": np.random.poisson(30, 300)
+        "unique_ips": np.random.poisson(20, 300)
     })
     anomalies = pd.DataFrame({
-        "packet_rate": np.random.uniform(800, 1500, 20),
+        "packet_rate": np.random.uniform(1000, 2000, 20),
         "packet_length": np.random.uniform(1000, 2000, 20),
         "inter_arrival_time": np.random.uniform(0.0001, 0.01, 20),
         "unique_ips": np.random.randint(500, 1000, 20)
     })
-    df = pd.concat([normal, anomalies])
     model = IsolationForest(contamination=0.05, random_state=42)
-    model.fit(df)
+    model.fit(pd.concat([normal, anomalies]))
     return model
 
 model = train_model()
 
-# --- Fetch Live Data ---
-@st.cache_data(ttl=60)
-def fetch_data():
+# --- Fetch Data ---
+@st.cache_data(ttl=30)
+def fetch_live_data():
     try:
         client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
-        query_api = client.query_api()
-        query = f'''
+        query = f"""
         from(bucket: "{INFLUXDB_BUCKET}")
         |> range(start: -1000h)
-        |> filter(fn: (r) => r._measurement == "{MEASUREMENT}")
+        |> filter(fn: (r) => r["_measurement"] == "{MEASUREMENT}")
         |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
-        '''
-        df = query_api.query_data_frame(query)
+        """
+        df = client.query_api().query_data_frame(query)
         client.close()
         return df
     except Exception as e:
-        st.error(f"❌ Error fetching data: {e}")
+        st.error(f"❌ InfluxDB Error: {e}")
         return pd.DataFrame()
 
-# --- Use Live or Manual Data ---
+# --- Handle Live or Manual Mode ---
 if use_live:
-    st.subheader("📡 Using Live Data from InfluxDB")
-    df = fetch_data()
+    st.subheader("📡 Live Traffic Data from InfluxDB")
+    df = fetch_live_data()
     if df.empty:
         st.warning("⚠️ No live data found.")
         st.stop()
-    inter_arrival = df["inter_arrival_time"].replace(0, np.nan).mean()
+
+    required = ["inter_arrival_time", "packet_length", "source_ip"]
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        st.error(f"❌ Missing fields: {missing}")
+        st.stop()
+
+    df["timestamp"] = pd.to_datetime(df["_time"])
+    mean_arrival = df["inter_arrival_time"].replace(0, np.nan).mean()
     packet_length = df["packet_length"].mean()
     unique_ips = df["source_ip"].nunique()
-    packet_rate = 1 / inter_arrival if inter_arrival and inter_arrival > 0 else 0
-    st.success("✅ Live data loaded.")
-    with st.expander("🧾 Raw Data Sample"):
-        st.dataframe(df.tail(10))
+    packet_rate = 1 / mean_arrival if mean_arrival > 0 else 0
 else:
-    st.subheader("🛠 Using Manual Input")
+    df = pd.DataFrame()
     packet_rate = 1 / inter_arrival if inter_arrival > 0 else 0
 
 # --- Inference ---
-features = np.array([[packet_rate, packet_length, inter_arrival, unique_ips]])
-prediction = model.predict(features)[0]
-score = model.decision_function(features)[0]
+X = np.array([[packet_rate, packet_length, unique_ips]])
+prediction = model.predict(X)[0]
+score = model.decision_function(X)[0]
 
-st.subheader("🔎 Anomaly Detection Result")
+st.subheader("🔍 Anomaly Detection Result")
 st.metric("Anomaly Score", f"{score:.4f}")
 if prediction == -1 or score < anomaly_threshold:
     st.error("🚨 Anomaly Detected: Possible DoS Attack")
 else:
     st.success("✅ Normal Traffic Behavior")
 
-# --- Feature Metrics ---
-st.subheader("📊 Feature Breakdown")
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Packet Rate", f"{packet_rate:.2f} pkts/s")
-col2.metric("Packet Length", f"{packet_length:.0f} bytes")
-col3.metric("Inter-Arrival Time", f"{inter_arrival:.4f} s")
-col4.metric("Unique IPs", f"{unique_ips:,}")
+# --- Feature Summary ---
+st.markdown("### 📊 Feature Breakdown")
+col1, col2, col3 = st.columns(3)
+col1.metric("Packet Rate", f"{packet_rate:.2f} pkt/s")
+col2.metric("Packet Size", f"{packet_length:.1f} bytes")
+col3.metric("Unique IPs", unique_ips)
 
 # --- Visualizations ---
 if use_live and not df.empty:
-    df["timestamp"] = pd.to_datetime(df["_time"])
+    st.markdown("### 📈 Real-Time Visualizations")
     df["packet_rate"] = 1 / df["inter_arrival_time"].replace(0, np.nan)
+    df["unique_ip_count"] = df.groupby("timestamp")["source_ip"].transform("nunique")
 
     with st.expander("📈 Packet Rate Over Time"):
-        fig = px.line(df.tail(100), x="timestamp", y="packet_rate",
-                      title="📈 Packet Rate Over Time (Last 100 Records)",
-                      labels={"packet_rate": "Packets per Second"})
-        st.plotly_chart(fig, use_container_width=True)
+        fig1 = px.line(df.tail(100), x="timestamp", y="packet_rate",
+                       title="📈 Packet Rate Over Time")
+        st.plotly_chart(fig1, use_container_width=True)
 
-    with st.expander("🧭 Anomaly Scatter Plot"):
-        df["anomaly"] = model.predict(df[["packet_rate", "packet_length", "inter_arrival_time", "unique_ips"]].fillna(0))
-        fig2 = px.scatter(df.tail(200),
-                          x="packet_rate",
-                          y="packet_length",
-                          color=df["anomaly"].map({1: "Normal", -1: "Anomaly"}),
-                          title="Packet Rate vs Packet Length - Anomaly Detection",
-                          labels={"packet_rate": "Packet Rate", "packet_length": "Packet Length"})
+    with st.expander("📊 Unique Source IPs Over Time"):
+        fig2 = px.bar(df.tail(100), x="timestamp", y="unique_ip_count",
+                      title="📊 Unique IP Count Over Time")
         st.plotly_chart(fig2, use_container_width=True)
 
-# --- Model Info ---
+    with st.expander("🧭 Packet Rate vs Packet Size (Anomaly)"):
+        df["anomaly"] = model.predict(df[["packet_rate", "packet_length", "inter_arrival_time"]].fillna(0))
+        fig3 = px.scatter(df.tail(200), x="packet_rate", y="packet_length",
+                          color=df["anomaly"].map({1: "Normal", -1: "Anomaly"}),
+                          title="Packet Rate vs Packet Length")
+        st.plotly_chart(fig3, use_container_width=True)
+
+# --- Model Explanation ---
 with st.expander("ℹ️ Model Info"):
     st.markdown("""
-- **Model**: Isolation Forest
-- **Features Used**:
-    - Packet Rate = 1 / Inter-Arrival Time
-    - Packet Length (bytes)
-    - Unique IPs
-    - Inter-Arrival Time (s)
-- **Trained On**: Simulated Normal & DoS Traffic
+- **Packet Rate** = 1 / Inter-Arrival Time  
+- **Packet Size** = Mean packet length  
+- **Unique IPs** = Count of unique source IPs  
+- **Model** = Isolation Forest trained on synthetic traffic  
 """)
