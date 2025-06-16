@@ -33,7 +33,7 @@ while True:
         # --- Query Latest Data from InfluxDB ---
         query = f'''
         from(bucket: "{INFLUXDB_BUCKET}")
-          |> range(start: -2m)
+          |> range(start: -100h)
           |> filter(fn: (r) => r["_measurement"] == "{MEASUREMENT}")
           |> filter(fn: (r) => r["_field"] == "packet_rate" or r["_field"] == "packet_length" or r["_field"] == "inter_arrival_time")
           |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
