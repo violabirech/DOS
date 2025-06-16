@@ -613,4 +613,12 @@ with tab1:
         if total_records > 0:
             st.subheader("**Traffic Classification**")
             
-            fig_pie = go.Figure(data=[go.Pie
+            fig_pie = go.Figure(data=[
+    go.Pie(
+        labels=["Normal Traffic", "Anomalies"],
+        values=[normal_count, anomaly_count],
+        hole=0.4,
+        textinfo="label+percent"
+    )
+])
+
