@@ -156,3 +156,30 @@ with st.expander("â„¹ï¸ Model Info & Explanation"):
     - Trained with normal and synthetic anomalous samples
     - Decision threshold: `score < 0` = anomaly
     """)
+
+
+# --- Charts Section ---
+st.markdown("### ðŸ“ˆ Traffic Pattern Visualizations")
+
+if use_live and not df.empty:
+    # 1. Packet Rate Over Time
+    df_time = df.copy()
+    df_time['timestamp'] = df_time['_time'] if '_time' in df.columns else pd.Timestamp.now()
+    df_time = df_time.set_index('timestamp').resample('1min').agg({
+        "inter_arrival_time": "mean"
+    }).dropna()
+    df_time["packet_rate"] = 1 / df_time["inter_arrival_time"]
+
+    fig1 = px.line(df_time, y="packet_rate", title="ðŸ“¡ Packet Rate Over Time (pkt/s)")
+    st.plotly_chart(fig1, use_container_width=True)
+
+    # 2. Packet Size Distribution
+    fig2 = px.histogram(df, x="packet_length", nbins=50, title="ðŸ“¦ Packet Size Distribution")
+    st.plotly_chart(fig2, use_container_width=True)
+
+    # 3. Top Source IPs
+    if "source_ip" in df.columns:
+        top_ips = df["source_ip"].value_counts().head(10).reset_index()
+        top_ips.columns = ["source_ip", "count"]
+        fig3 = px.bar(top_ips, x="source_ip", y="count", title="ðŸŒ Top 10 Source IPs")
+        st.plotly_chart(fig3, use_container_width=True)
