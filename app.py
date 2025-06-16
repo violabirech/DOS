@@ -1,133 +1,119 @@
-# dos_dashboard_no_time.py
-
 import streamlit as st
+import numpy as np
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 from influxdb_client import InfluxDBClient
-import time
+from sklearn.ensemble import IsolationForest
 
 # --- InfluxDB Configuration ---
 INFLUXDB_URL = "https://us-east-1-1.aws.cloud2.influxdata.com"
 INFLUXDB_TOKEN = "6gjE97dCC24hgOgWNmRXPqOS0pfc0pMSYeh5psL8e5u2T8jGeV1F17CU-U1z05if0jfTEmPRW9twNPSXN09SRQ=="
 INFLUXDB_ORG = "Anormally Detection"
 INFLUXDB_BUCKET = "realtime"
-MEASUREMENT = "network_data"
+MEASUREMENT = "network_traffic"
 
-# --- Page Setup ---
-st.set_page_config(page_title="🛡️ DoS Attack Detection", layout="wide")
+# --- Streamlit Setup ---
+st.set_page_config(page_title="🛡️ DoS Anomaly Detection", layout="wide")
+st.title("🛡️ DoS Anomaly Detection Dashboard")
+st.markdown("Detect DoS attacks using live data or simulated input. This version uses a trained Isolation Forest model embedded in the app.")
 
-st.markdown("""
-<style>
-    .alert-high {background-color:#ffe6e6;border-left:5px solid red;padding:1rem;border-radius:8px;}
-    .alert-medium {background-color:#fff8e6;border-left:5px solid orange;padding:1rem;border-radius:8px;}
-    .alert-low {background-color:#e6ffe6;border-left:5px solid green;padding:1rem;border-radius:8px;}
-</style>
-""", unsafe_allow_html=True)
+# --- Sidebar Controls ---
+st.sidebar.header("Manual Input / Live Data")
+syn_count = st.sidebar.number_input("SYN Flag Count (per minute)", 0, 10000, value=500, step=100)
+packet_rate = st.sidebar.number_input("Packet Rate (packets/sec)", 0.0, 10000.0, value=200.0, step=10.0)
+avg_packet_size = st.sidebar.number_input("Average Packet Size (bytes)", 0, 9000, value=512, step=64)
+unique_ips = st.sidebar.number_input("Unique Source IPs", 0, 5000, value=50, step=10)
+use_live = st.sidebar.checkbox("📡 Use Live Data from InfluxDB", value=False)
 
-# --- Fetch Data ---
+# --- Fetch InfluxDB Data ---
 @st.cache_data(ttl=30)
-def fetch_dos_data():
+def fetch_live_data():
     try:
         client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
         query_api = client.query_api()
         query = f'''
         from(bucket: "{INFLUXDB_BUCKET}")
-        |> range(start: -1h)
+        |> range(start: -5m)
         |> filter(fn: (r) => r["_measurement"] == "{MEASUREMENT}")
-        |> pivot(rowKey:["_field"], columnKey: ["_field"], valueColumn: "_value")
+        |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
+        |> sort(columns: ["_time"])
         '''
         df = query_api.query_data_frame(query)
         client.close()
         return df
     except Exception as e:
-        st.error(f"❌ Error: {e}")
+        st.error(f"❌ InfluxDB Error: {e}")
         return pd.DataFrame()
 
-# --- Detection Logic ---
-def detect_dos(df):
+# --- Train Isolation Forest Model ---
+@st.cache_resource
+def train_model():
+    np.random.seed(42)
+    normal = pd.DataFrame({
+        "syn_count": np.random.poisson(200, 300),
+        "packet_rate": np.random.normal(100, 15, 300),
+        "avg_packet_size": np.random.normal(512, 100, 300),
+        "unique_ips": np.random.poisson(20, 300)
+    })
+    anomalies = pd.DataFrame({
+        "syn_count": np.random.randint(2000, 5000, 20),
+        "packet_rate": np.random.uniform(1000, 5000, 20),
+        "avg_packet_size": np.random.uniform(1000, 2000, 20),
+        "unique_ips": np.random.randint(500, 1000, 20)
+    })
+    df = pd.concat([normal, anomalies], ignore_index=True)
+    model = IsolationForest(contamination=0.05, random_state=42)
+    model.fit(df)
+    return model
+
+model = train_model()
+
+# --- Use Live Data If Selected ---
+if use_live:
+    st.subheader("📡 Live DoS Traffic Summary")
+    df = fetch_live_data()
     if df.empty:
-        return {}
-
-    syn_count = df[df['flags'] == 'SYN'].shape[0] if 'flags' in df else 0
-    unique_ips = df['source_ip'].nunique() if 'source_ip' in df else 0
-    large_packets = df[df['packet_size'] > 1000].shape[0] if 'packet_size' in df else 0
-    total_packets = len(df)
-
-    if total_packets > 3000 or syn_count > 1000:
-        level = "HIGH"
-        message = f"🚨 High traffic: {total_packets} packets, SYN={syn_count}"
-    elif total_packets > 1000 or syn_count > 300:
-        level = "MEDIUM"
-        message = f"⚠️ Suspicious traffic: {total_packets} packets, SYN={syn_count}"
-    else:
-        level = "LOW"
-        message = f"✅ Normal traffic: {total_packets} packets"
-
-    return {
-        "level": level,
-        "message": message,
-        "total_packets": total_packets,
-        "syn_count": syn_count,
-        "unique_ips": unique_ips,
-        "large_packets": large_packets
-    }
-
-# --- Charts ---
-def plot_top_ips(df):
-    if 'source_ip' not in df:
-        return go.Figure()
-    top_ips = df['source_ip'].value_counts().head(10)
-    fig = px.bar(x=top_ips.index, y=top_ips.values, title="Top Source IPs", labels={"x": "IP", "y": "Count"})
-    fig.update_layout(xaxis_tickangle=-45)
-    return fig
-
-# --- Main ---
-def main():
-    st.title("🛡️ DoS Detection Dashboard (No Time Field)")
-
-    auto_refresh = st.sidebar.checkbox("Auto Refresh (30s)", value=False)
-    if st.sidebar.button("🔄 Manual Refresh") or auto_refresh:
-        st.rerun()
-
-    with st.spinner("Fetching data from InfluxDB..."):
-        df = fetch_dos_data()
-
-    if df.empty:
-        st.warning("No DoS data found.")
-        return
-
-    alert = detect_dos(df)
-
-    # Alert Box
-    st.header("🚨 Alert Level")
-    if alert['level'] == "HIGH":
-        st.markdown(f"<div class='alert-high'>{alert['message']}</div>", unsafe_allow_html=True)
-    elif alert['level'] == "MEDIUM":
-        st.markdown(f"<div class='alert-medium'>{alert['message']}</div>", unsafe_allow_html=True)
-    else:
-        st.markdown(f"<div class='alert-low'>{alert['message']}</div>", unsafe_allow_html=True)
-
-    # Metrics
-    st.header("📊 DoS Metrics")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Packets", alert['total_packets'])
-    col2.metric("SYN Packets", alert['syn_count'])
-    col3.metric("Large Packets", alert['large_packets'])
-    col4.metric("Unique IPs", alert['unique_ips'])
-
-    # Visual
-    st.header("📌 Top Offenders")
-    st.plotly_chart(plot_top_ips(df), use_container_width=True)
-
-    # Raw
-    with st.expander("📋 Raw Data"):
+        st.warning("⚠️ No recent data found in 'network_traffic'.")
+        st.stop()
+    with st.expander("🔍 Preview Data"):
         st.dataframe(df.tail(100))
+    syn_count = df[df['flags'] == 'SYN'].shape[0] if 'flags' in df else 0
+    avg_packet_size = df['packet_size'].mean() if 'packet_size' in df else 0
+    unique_ips = df['source_ip'].nunique() if 'source_ip' in df else 0
+    packet_rate = len(df) / 300
 
-    # Refresh
-    if auto_refresh:
-        time.sleep(30)
-        st.rerun()
+# --- Prediction ---
+X = np.array([[syn_count, packet_rate, avg_packet_size, unique_ips]])
+prediction = model.predict(X)[0]
+score = model.decision_function(X)[0]
 
-if __name__ == "__main__":
-    main()
+# --- Output ---
+st.subheader("🔍 Detection Result")
+st.metric("Anomaly Score", f"{score:.4f}")
+if prediction == -1:
+    st.error("🚨 Anomaly Detected (Possible DoS)")
+else:
+    st.success("✅ Normal Traffic")
+
+# --- Feature Summary ---
+st.markdown("### 📊 Feature Summary")
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("SYN Count", int(syn_count))
+col2.metric("Packet Rate", f"{packet_rate:.2f} pkt/s")
+col3.metric("Avg Packet Size", f"{avg_packet_size:.1f} bytes")
+col4.metric("Unique IPs", unique_ips)
+
+# --- Explanation ---
+with st.expander("ℹ️ How This Works"):
+    st.markdown("""
+    This dashboard trains an **Isolation Forest** model on synthetic DoS patterns.
+
+    **Features:**
+    - `syn_count`: Total SYN packets per minute
+    - `packet_rate`: Packets per second
+    - `avg_packet_size`: Average bytes per packet
+    - `unique_ips`: Unique IP addresses in the window
+
+    **Prediction**:
+    - `1`: Normal
+    - `-1`: Anomaly
+    """)
