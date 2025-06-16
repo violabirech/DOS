@@ -1,609 +1,722 @@
-import gradio as gr
-import numpy as np
+**The error is occurring because you're trying to run Gradio inside Streamlit, which causes port conflicts. Here are the solutions:**
+
+## **Solution 1: Fixed Streamlit App (Remove Gradio Launch)**
+
+Replace your current Streamlit app with this corrected version:
+
+```python
+import streamlit as st
+
+# --- Page Setup - MUST BE FIRST STREAMLIT COMMAND ---
+st.set_page_config(page_title="🚀 DoS Detection Dashboard", layout="wide")
+
+# Now import everything else
 import pandas as pd
-from sklearn.ensemble import IsolationForest
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
-from sklearn.model_selection import train_test_split
-import joblib
-import json
+import numpy as np
+import requests
+from datetime import datetime, timedelta
 import time
-import logging
-from datetime import datetime
+from influxdb_client import InfluxDBClient
+import plotly.express as px
+import plotly.graph_objects as go
 import warnings
 warnings.filterwarnings('ignore')
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# --- Configuration ---
+PRIMARY_API_URL = "https://violabirech-dos-anomalies-detection.hf.space/predict"
+BACKUP_API_URLS = [
+    "https://violabirech-dos-anomalies-detection.hf.space/",
+    "https://api-inference.huggingface.co/models/violabirech/dos-anomalies-detection"
+]
 
-class AdvancedDoSDetector:
-    """Advanced DoS Anomaly Detection System"""
+INFLUXDB_URL = "https://us-east-1-1.aws.cloud2.influxdata.com"
+INFLUXDB_TOKEN = "6gjE97dCC24hgOgWNmRXPqOS0pfc0pMSYeh5psL8e5u2T8jGeV1F17CU-U1z05if0jfTEmPRW9twNPSXN09SRQ=="
+INFLUXDB_ORG = "Anormally Detection"
+INFLUXDB_BUCKET = "realtime"
+INFLUXDB_MEASUREMENT = "network_traffic"
+
+# --- Initialize session state ---
+if 'monitoring_active' not in st.session_state:
+    st.session_state.monitoring_active = False
+if 'historical_data' not in st.session_state:
+    st.session_state.historical_data = []
+if 'anomaly_alerts' not in st.session_state:
+    st.session_state.anomaly_alerts = []
+if 'query_performance' not in st.session_state:
+    st.session_state.query_performance = []
+if 'api_status' not in st.session_state:
+    st.session_state.api_status = "Unknown"
+if 'working_api_url' not in st.session_state:
+    st.session_state.working_api_url = None
+
+# --- Sidebar Controls ---
+st.sidebar.title("🔧 Controls")
+
+# API Configuration
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔌 API Configuration")
+use_mock_api = st.sidebar.checkbox("Force Mock API (for testing)", value=False)
+
+if st.sidebar.button("🔍 Test API Connection"):
+    st.sidebar.write("Testing API...")
+    working_url = test_all_apis()
+    if working_url:
+        st.sidebar.success(f"✅ Found working API")
+        st.session_state.working_api_url = working_url
+        st.session_state.api_status = "Online"
+    else:
+        st.sidebar.error("❌ No working APIs found")
+        st.session_state.api_status = "Offline"
+
+# Auto-refresh settings
+auto_refresh = st.sidebar.checkbox("Auto Refresh", value=False)
+refresh_interval = st.sidebar.selectbox("Refresh Interval", [5, 10, 15, 30, 60], index=1)
+
+time_window = st.sidebar.selectbox("Time Range", ["-5m", "-15m", "-1h", "-6h", "-12h", "-1d", "-7d", "-30d"], index=0)
+thresh = st.sidebar.slider("Anomaly Threshold", 0.01, 1.0, 0.1, 0.01)
+max_records = st.sidebar.slider("Max Records to Process", 10, 100, 25, 10)
+
+# Performance settings
+st.sidebar.markdown("---")
+st.sidebar.subheader("⚡ Performance Settings")
+query_timeout = st.sidebar.slider("Query Timeout (seconds)", 5, 60, 15, 5)
+cache_ttl = st.sidebar.slider("Cache TTL (seconds)", 30, 300, 60, 30)
+
+# Monitoring controls
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎛️ Monitoring Controls")
+
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    if st.button("▶️ Start", type="primary"):
+        st.session_state.monitoring_active = True
+with col2:
+    if st.button("⏹️ Stop"):
+        st.session_state.monitoring_active = False
+
+# Clear data button
+if st.sidebar.button("🗑️ Clear History"):
+    st.session_state.historical_data = []
+    st.session_state.anomaly_alerts = []
+    st.session_state.query_performance = []
+    st.rerun()
+
+# Configuration override
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔧 Configuration Override")
+custom_bucket = st.sidebar.text_input("Bucket Name", value=INFLUXDB_BUCKET)
+custom_measurement = st.sidebar.text_input("Measurement Name", value=INFLUXDB_MEASUREMENT)
+custom_org = st.sidebar.text_input("Organization", value=INFLUXDB_ORG)
+
+# Update variables if overridden
+if custom_bucket:
+    INFLUXDB_BUCKET = custom_bucket
+if custom_measurement:
+    INFLUXDB_MEASUREMENT = custom_measurement
+if custom_org:
+    INFLUXDB_ORG = custom_org
+
+# --- Title ---
+st.title("🚀 Real-Time DoS Anomaly Detection Dashboard")
+
+# Status indicator
+status_col1, status_col2, status_col3, status_col4 = st.columns([1, 1, 1, 2])
+with status_col1:
+    if st.session_state.monitoring_active:
+        st.success("🟢 ACTIVE")
+    else:
+        st.error("🔴 STOPPED")
+
+with status_col2:
+    st.info(f"⏱️ Refresh: {refresh_interval}s")
+
+with status_col3:
+    st.info(f"📊 Records: {max_records}")
+
+with status_col4:
+    if st.session_state.historical_data:
+        last_update = max([d['timestamp'] for d in st.session_state.historical_data])
+        st.write(f"📅 Last Update: {last_update}")
+
+# API Status indicator
+api_status_col1, api_status_col2, api_status_col3 = st.columns([1, 1, 2])
+with api_status_col1:
+    if st.session_state.api_status == "Online":
+        st.success("🟢 API Online")
+    elif st.session_state.api_status == "Offline":
+        st.error("🔴 API Offline")
+    else:
+        st.warning("🟡 API Unknown")
+
+with api_status_col2:
+    if use_mock_api:
+        st.info("🧪 Mock Mode")
+    else:
+        st.info("🔗 Live Mode")
+
+with api_status_col3:
+    if st.session_state.working_api_url:
+        st.write(f"📡 Using: {st.session_state.working_api_url}")
+
+# --- Navigation Tabs ---
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏠 Overview", "📊 Live Stream", "⚙️ Manual Entry", "📈 Metrics & Alerts", "🔧 Diagnostics"])
+
+# --- Enhanced Helper Functions ---
+def mock_predict_anomaly(inter_arrival_time, packet_length):
+    """Advanced mock API that simulates realistic DoS detection"""
+    np.random.seed(int((inter_arrival_time * 1000 + packet_length) % 100))
     
-    def __init__(self):
-        self.isolation_forest = IsolationForest(
-            contamination=0.15, 
-            random_state=42, 
-            n_estimators=100,
-            max_samples='auto'
-        )
-        self.scaler = StandardScaler()
-        self.feature_scaler = MinMaxScaler()
-        self.is_trained = False
-        self.model_version = "advanced_isolation_forest_v2.1"
-        self.training_timestamp = None
-        self.feature_importance = {}
-        
-        # Initialize and train the model
-        self._initialize_model()
+    # Realistic DoS detection logic
+    anomaly_score = 0
     
-    def _generate_training_data(self, n_samples=5000):
-        """Generate comprehensive synthetic training data"""
-        np.random.seed(42)
-        data = []
-        labels = []
-        
-        # Normal traffic patterns (70% of data)
-        normal_samples = int(n_samples * 0.7)
-        for _ in range(normal_samples):
-            # Normal web browsing patterns
-            inter_arrival = np.random.exponential(0.1)  # 100ms average
-            packet_length = np.random.normal(650, 300)  # Average web packet
-            packet_length = np.clip(packet_length, 64, 1500)
-            
-            # Add some variation for different protocols
-            protocol_type = np.random.choice(['HTTP', 'HTTPS', 'DNS', 'SSH'])
-            if protocol_type == 'DNS':
-                packet_length = np.random.normal(100, 50)
-                inter_arrival = np.random.exponential(1.0)  # Less frequent
-            elif protocol_type == 'SSH':
-                packet_length = np.random.normal(200, 100)
-                inter_arrival = np.random.exponential(0.5)
-            
-            packet_length = np.clip(packet_length, 64, 1500)
-            data.append([inter_arrival, packet_length])
-            labels.append(0)  # Normal
-        
-        # DoS attack patterns (20% of data)
-        dos_samples = int(n_samples * 0.2)
-        for _ in range(dos_samples):
-            attack_type = np.random.choice(['flood', 'slowloris', 'amplification'])
-            
-            if attack_type == 'flood':
-                # High frequency, large packets
-                inter_arrival = np.random.exponential(0.001)  # Very fast
-                packet_length = np.random.uniform(1200, 1500)  # Large packets
-            elif attack_type == 'slowloris':
-                # Low frequency, small packets
-                inter_arrival = np.random.exponential(10.0)  # Very slow
-                packet_length = np.random.uniform(64, 200)  # Small packets
-            else:  # amplification
-                # Medium frequency, very large packets
-                inter_arrival = np.random.exponential(0.01)
-                packet_length = np.random.uniform(1400, 1500)
-            
-            data.append([inter_arrival, packet_length])
-            labels.append(1)  # Anomaly
-        
-        # Suspicious but not clearly malicious (10% of data)
-        suspicious_samples = int(n_samples * 0.1)
-        for _ in range(suspicious_samples):
-            # Borderline cases
-            inter_arrival = np.random.exponential(0.02)  # Moderately fast
-            packet_length = np.random.uniform(800, 1200)  # Medium-large packets
-            
-            data.append([inter_arrival, packet_length])
-            # Randomly label as normal or anomaly (creates uncertainty)
-            labels.append(np.random.choice([0, 1], p=[0.7, 0.3]))
-        
-        return np.array(data), np.array(labels)
+    # Check inter-arrival time (very fast requests are suspicious)
+    if inter_arrival_time < 0.001:
+        anomaly_score += 0.8
+    elif inter_arrival_time < 0.01:
+        anomaly_score += 0.4
+    elif inter_arrival_time < 0.1:
+        anomaly_score += 0.1
     
-    def _initialize_model(self):
-        """Initialize and train the model with synthetic data"""
+    # Check packet length (very large packets can indicate attacks)
+    if packet_length > 1500:
+        anomaly_score += 0.6
+    elif packet_length > 1000:
+        anomaly_score += 0.3
+    elif packet_length < 64:
+        anomaly_score += 0.2
+    
+    # Add some randomness
+    anomaly_score += np.random.uniform(-0.1, 0.1)
+    
+    # Determine if it's an anomaly
+    is_anomaly = 1 if anomaly_score > 0.5 else 0
+    reconstruction_error = min(1.0, max(0.0, anomaly_score + np.random.uniform(-0.1, 0.1)))
+    
+    # Determine anomaly type
+    if not is_anomaly:
+        anomaly_type = "Normal_Traffic"
+    elif inter_arrival_time < 0.001 and packet_length > 1000:
+        anomaly_type = "DDoS_Flood_Attack"
+    elif inter_arrival_time > 5.0 and packet_length < 300:
+        anomaly_type = "Slowloris_Attack"
+    elif packet_length > 1400:
+        anomaly_type = "Amplification_Attack"
+    else:
+        anomaly_type = "Suspicious_Activity"
+    
+    return {
+        "anomaly": is_anomaly,
+        "reconstruction_error": reconstruction_error,
+        "confidence": np.random.uniform(0.75, 0.95),
+        "risk_score": min(1.0, anomaly_score),
+        "anomaly_type": anomaly_type,
+        "model_version": "mock_v2.1_realistic",
+        "processing_time": np.random.uniform(0.05, 0.3),
+        "timestamp": datetime.now().isoformat(),
+        "features_used": ["inter_arrival_time", "packet_length"]
+    }
+
+def test_all_apis():
+    """Test all possible API endpoints to find a working one"""
+    test_payload = {
+        "inter_arrival_time": 0.02,
+        "packet_length": 5.0
+    }
+    
+    all_urls = [PRIMARY_API_URL] + BACKUP_API_URLS
+    
+    for url in all_urls:
         try:
-            logger.info("Generating training data...")
-            X, y = self._generate_training_data()
-            
-            logger.info("Training anomaly detection model...")
-            # Scale features
-            X_scaled = self.scaler.fit_transform(X)
-            X_normalized = self.feature_scaler.fit_transform(X_scaled)
-            
-            # Train isolation forest
-            self.isolation_forest.fit(X_normalized)
-            
-            # Calculate feature importance (approximation)
-            self._calculate_feature_importance(X_normalized, y)
-            
-            self.is_trained = True
-            self.training_timestamp = datetime.now()
-            
-            logger.info(f"Model trained successfully at {self.training_timestamp}")
-            
-        except Exception as e:
-            logger.error(f"Model training failed: {str(e)}")
-            self.is_trained = False
-    
-    def _calculate_feature_importance(self, X, y):
-        """Calculate approximate feature importance"""
-        try:
-            # Simple correlation-based importance
-            correlations = []
-            for i in range(X.shape[1]):
-                corr = np.corrcoef(X[:, i], y)[0, 1]
-                correlations.append(abs(corr) if not np.isnan(corr) else 0)
-            
-            total_importance = sum(correlations)
-            if total_importance > 0:
-                self.feature_importance = {
-                    'inter_arrival_time': correlations[0] / total_importance,
-                    'packet_length': correlations[1] / total_importance
-                }
-            else:
-                self.feature_importance = {
-                    'inter_arrival_time': 0.5,
-                    'packet_length': 0.5
-                }
+            response = requests.post(url, json=test_payload, timeout=5)
+            if response.status_code == 200:
+                # Try to parse JSON to make sure it's valid
+                result = response.json()
+                return url
         except:
-            self.feature_importance = {
-                'inter_arrival_time': 0.5,
-                'packet_length': 0.5
-            }
+            continue
     
-    def predict(self, inter_arrival_time, packet_length):
-        """Main prediction function"""
+    return None
+
+def predict_anomaly(inter_arrival_time, packet_length):
+    """Enhanced prediction function with multiple fallback options"""
+    if use_mock_api:
+        return mock_predict_anomaly(inter_arrival_time, packet_length)
+    
+    payload = {
+        "inter_arrival_time": float(inter_arrival_time),
+        "packet_length": float(packet_length)
+    }
+    
+    # Try working API first if we have one
+    if st.session_state.working_api_url:
+        try:
+            response = requests.post(st.session_state.working_api_url, json=payload, timeout=10)
+            if response.status_code == 200:
+                result = response.json()
+                st.session_state.api_status = "Online"
+                return result
+        except:
+            st.session_state.working_api_url = None
+    
+    # Try all APIs
+    all_urls = [PRIMARY_API_URL] + BACKUP_API_URLS
+    
+    for url in all_urls:
+        try:
+            response = requests.post(url, json=payload, timeout=5)
+            if response.status_code == 200:
+                result = response.json()
+                st.session_state.api_status = "Online"
+                st.session_state.working_api_url = url
+                return result
+        except:
+            continue
+    
+    # All APIs failed, use mock
+    st.session_state.api_status = "Offline"
+    return mock_predict_anomaly(inter_arrival_time, packet_length)
+
+@st.cache_data(ttl=60)
+def get_influx_data_optimized(time_range, bucket, measurement, org, limit=50, timeout=15):
+    """Optimized InfluxDB query with timeout and performance monitoring"""
+    try:
         start_time = time.time()
         
+        # Create client with timeout
+        client = InfluxDBClient(
+            url=INFLUXDB_URL, 
+            token=INFLUXDB_TOKEN, 
+            org=org, 
+            timeout=timeout*1000
+        )
+        query_api = client.query_api()
+        
+        # Optimized query - limit first, then process
+        query = f'''
+        from(bucket: "{bucket}")
+          |> range(start: {time_range})
+          |> filter(fn: (r) => r._measurement == "{measurement}")
+          |> filter(fn: (r) => r._field == "inter_arrival_time" or r._field == "packet_length" or r._field == "label")
+          |> limit(n: {limit})
+          |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+          |> sort(columns: ["_time"], desc: true)
+        '''
+        
+        data = query_api.query_data_frame(org=org, query=query)
+        
+        if isinstance(data, list) and data:
+            data = pd.concat(data, ignore_index=True)
+        
+        elapsed_time = time.time() - start_time
+        
+        # Store performance metrics
+        perf_metric = {
+            'timestamp': datetime.now(),
+            'query_time': elapsed_time,
+            'records_returned': len(data) if data is not None and not data.empty else 0,
+            'time_range': time_range,
+            'limit': limit
+        }
+        st.session_state.query_performance.append(perf_metric)
+        
+        # Keep only last 50 performance metrics
+        if len(st.session_state.query_performance) > 50:
+            st.session_state.query_performance = st.session_state.query_performance[-50:]
+        
+        client.close()
+        return data, elapsed_time
+        
+    except Exception as e:
+        error_time = time.time() - start_time if 'start_time' in locals() else 0
+        st.error(f"InfluxDB Error (took {error_time:.2f}s): {e}")
+        return None, error_time
+
+def process_batch_predictions_optimized(df):
+    """Optimized batch processing with progress indicators"""
+    predictions = []
+    
+    if df.empty:
+        return predictions
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    total_records = min(len(df), max_records)
+    processed_df = df.head(total_records)
+    
+    for i, (index, row) in enumerate(processed_df.iterrows()):
+        if not st.session_state.monitoring_active:
+            break
+            
         try:
-            if not self.is_trained:
-                return {"error": "Model not trained properly"}
+            result = predict_anomaly(row['inter_arrival_time'], row['packet_length'])
             
-            # Input validation
-            if inter_arrival_time < 0 or packet_length < 0:
-                return {"error": "Invalid input: negative values not allowed"}
+            if 'error' not in result:
+                result.update({
+                    "timestamp": row["_time"],
+                    "inter_arrival_time": row['inter_arrival_time'],
+                    "packet_length": row['packet_length'],
+                    "label": row.get("label", None),
+                    "source_ip": row.get("source_ip", "Unknown"),
+                    "dest_ip": row.get("dest_ip", "Unknown"),
+                    "dns_rate": row.get("dns_rate", 1.0)
+                })
+                predictions.append(result)
+                
+                # Add to historical data
+                st.session_state.historical_data.append(result)
+                
+                # Check for anomalies and add alerts
+                if result.get('anomaly', 0) == 1:
+                    alert = {
+                        "timestamp": result["timestamp"],
+                        "severity": "HIGH" if result.get('reconstruction_error', 0) > thresh * 2 else "MEDIUM",
+                        "message": f"Anomaly detected: {result.get('anomaly_type', 'Unknown')} - Error: {result.get('reconstruction_error', 0):.4f}",
+                        "source_ip": result.get("source_ip", "Unknown"),
+                        "anomaly_type": result.get("anomaly_type", "Unknown")
+                    }
+                    st.session_state.anomaly_alerts.append(alert)
             
-            if packet_length > 65535:  # Max packet size
-                return {"error": "Invalid input: packet length too large"}
-            
-            # Prepare input
-            X = np.array([[inter_arrival_time, packet_length]])
-            X_scaled = self.scaler.transform(X)
-            X_normalized = self.feature_scaler.transform(X_scaled)
-            
-            # Get predictions
-            anomaly_prediction = self.isolation_forest.predict(X_normalized)[0]
-            anomaly_score = self.isolation_forest.decision_function(X_normalized)[0]
-            
-            # Convert to binary classification
-            is_anomaly = 1 if anomaly_prediction == -1 else 0
-            
-            # Calculate reconstruction error (normalized anomaly score)
-            reconstruction_error = max(0, (-anomaly_score + 0.5) / 1.5)
-            reconstruction_error = min(1.0, reconstruction_error)
-            
-            # Calculate confidence based on distance from decision boundary
-            confidence = min(0.95, 0.6 + abs(anomaly_score) * 0.4)
-            
-            # Determine anomaly type based on input characteristics
-            anomaly_type = self._classify_anomaly_type(inter_arrival_time, packet_length, is_anomaly)
-            
-            # Calculate risk score
-            risk_score = self._calculate_risk_score(inter_arrival_time, packet_length, reconstruction_error)
-            
-            processing_time = time.time() - start_time
-            
-            result = {
-                "anomaly": int(is_anomaly),
-                "reconstruction_error": float(reconstruction_error),
-                "confidence": float(confidence),
-                "anomaly_score": float(anomaly_score),
-                "risk_score": float(risk_score),
-                "anomaly_type": anomaly_type,
-                "model_version": self.model_version,
-                "processing_time": float(processing_time),
-                "timestamp": datetime.now().isoformat(),
-                "features_used": ["inter_arrival_time", "packet_length"],
-                "feature_importance": self.feature_importance,
-                "input_validation": {
-                    "inter_arrival_time_valid": 0 <= inter_arrival_time <= 60,
-                    "packet_length_valid": 64 <= packet_length <= 1500,
-                    "input_normalized": True
-                },
-                "model_info": {
-                    "algorithm": "Isolation Forest",
-                    "training_timestamp": self.training_timestamp.isoformat() if self.training_timestamp else None,
-                    "contamination_rate": 0.15
-                }
-            }
-            
-            return result
+            progress = (i + 1) / total_records
+            progress_bar.progress(progress)
+            status_text.text(f"Processed {i + 1}/{total_records} records")
             
         except Exception as e:
-            return {
-                "error": f"Prediction failed: {str(e)}",
-                "processing_time": time.time() - start_time,
-                "timestamp": datetime.now().isoformat()
-            }
+            continue
     
-    def _classify_anomaly_type(self, inter_arrival_time, packet_length, is_anomaly):
-        """Classify the type of anomaly based on characteristics"""
-        if not is_anomaly:
-            return "Normal_Traffic"
-        
-        if inter_arrival_time < 0.001 and packet_length > 1000:
-            return "DDoS_Flood_Attack"
-        elif inter_arrival_time > 5.0 and packet_length < 300:
-            return "Slowloris_Attack"
-        elif packet_length > 1400:
-            return "Amplification_Attack"
-        elif inter_arrival_time < 0.01:
-            return "High_Frequency_Attack"
-        else:
-            return "Suspicious_Activity"
+    progress_bar.empty()
+    status_text.empty()
     
-    def _calculate_risk_score(self, inter_arrival_time, packet_length, reconstruction_error):
-        """Calculate overall risk score (0-1)"""
-        risk = 0
-        
-        # Inter-arrival time risk
-        if inter_arrival_time < 0.001:
-            risk += 0.4
-        elif inter_arrival_time < 0.01:
-            risk += 0.2
-        elif inter_arrival_time > 10:
-            risk += 0.3
-        
-        # Packet length risk
-        if packet_length > 1400:
-            risk += 0.3
-        elif packet_length < 100:
-            risk += 0.2
-        
-        # Reconstruction error contribution
-        risk += reconstruction_error * 0.3
-        
-        return min(1.0, risk)
+    # Limit historical data size
+    if len(st.session_state.historical_data) > 1000:
+        st.session_state.historical_data = st.session_state.historical_data[-1000:]
+    
+    if len(st.session_state.anomaly_alerts) > 100:
+        st.session_state.anomaly_alerts = st.session_state.anomaly_alerts[-100:]
+    
+    return predictions
 
-# Initialize the detector
-logger.info("Initializing DoS Anomaly Detector...")
-detector = AdvancedDoSDetector()
-
-def predict_dos_anomaly(inter_arrival_time, packet_length):
-    """Main prediction function for Gradio interface"""
+def check_bucket_data(bucket, org, timeout=10):
+    """Quick check if bucket contains any data"""
     try:
-        result = detector.predict(float(inter_arrival_time), float(packet_length))
+        client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=org, timeout=timeout*1000)
+        query_api = client.query_api()
         
-        if "error" in result:
-            return f"❌ {result['error']}", "N/A", "N/A", "N/A", json.dumps(result, indent=2)
+        basic_query = f'''
+        from(bucket: "{bucket}")
+          |> range(start: -24h)
+          |> limit(n: 1)
+        '''
         
-        # Format output for display
-        status = "🚨 ANOMALY DETECTED" if result["anomaly"] == 1 else "✅ NORMAL TRAFFIC"
-        confidence = f"{result['confidence']:.1%}"
-        error = f"{result['reconstruction_error']:.6f}"
-        risk = f"{result['risk_score']:.2f}"
+        result = query_api.query_data_frame(org=org, query=basic_query)
+        client.close()
         
-        return status, confidence, error, risk, json.dumps(result, indent=2)
-    
-    except Exception as e:
-        error_result = {"error": str(e), "timestamp": datetime.now().isoformat()}
-        return f"❌ Error: {str(e)}", "N/A", "N/A", "N/A", json.dumps(error_result, indent=2)
-
-def batch_predict(file):
-    """Batch prediction from CSV file"""
-    try:
-        if file is None:
-            return "No file uploaded", ""
-        
-        # Read CSV file
-        df = pd.read_csv(file.name)
-        
-        # Validate required columns
-        required_cols = ['inter_arrival_time', 'packet_length']
-        if not all(col in df.columns for col in required_cols):
-            return f"Error: CSV must contain columns: {required_cols}", ""
-        
-        # Process predictions
-        results = []
-        for _, row in df.iterrows():
-            result = detector.predict(row['inter_arrival_time'], row['packet_length'])
-            results.append(result)
-        
-        # Create results DataFrame
-        results_df = pd.DataFrame(results)
-        
-        # Save results
-        output_file = "batch_predictions.csv"
-        results_df.to_csv(output_file, index=False)
-        
-        # Summary statistics
-        if 'anomaly' in results_df.columns:
-            total_records = len(results_df)
-            anomalies = results_df['anomaly'].sum()
-            anomaly_rate = (anomalies / total_records) * 100
-            
-            summary = f"""
-            Batch Prediction Results:
-            - Total Records: {total_records}
-            - Anomalies Detected: {anomalies}
-            - Anomaly Rate: {anomaly_rate:.1f}%
-            - Average Confidence: {results_df['confidence'].mean():.1%}
-            - Average Risk Score: {results_df['risk_score'].mean():.2f}
-            """
-        else:
-            summary = "Batch processing completed with errors"
-        
-        return summary, output_file
+        return result is not None and not result.empty
         
     except Exception as e:
-        return f"Error processing batch: {str(e)}", ""
+        return False
 
-# Create comprehensive Gradio interface
-with gr.Blocks(
-    title="Advanced DoS Anomaly Detection API", 
-    theme=gr.themes.Soft(),
-    css="""
-    .gradio-container {
-        max-width: 1200px !important;
-    }
-    .tab-nav button {
-        font-size: 16px !important;
-    }
-    """
-) as demo:
-    
-    gr.Markdown("""
-    # 🚀 Advanced DoS Anomaly Detection System
-    
-    **Real-time network traffic analysis for Denial of Service attack detection**
-    
-    This system uses advanced machine learning algorithms to detect various types of DoS attacks including:
-    - DDoS Flood Attacks
-    - Slowloris Attacks  
-    - Amplification Attacks
-    - High-frequency suspicious activity
-    """)
-    
-    with gr.Tab("🔍 Real-time Detection"):
-        with gr.Row():
-            with gr.Column(scale=1):
-                gr.Markdown("### Input Parameters")
-                
-                inter_arrival_input = gr.Number(
-                    label="Inter Arrival Time (seconds)",
-                    value=0.02,
-                    precision=6,
-                    info="Time between consecutive network packets",
-                    minimum=0,
-                    maximum=60
-                )
-                
-                packet_length_input = gr.Number(
-                    label="Packet Length (bytes)",
-                    value=800,
-                    precision=0,
-                    info="Size of the network packet in bytes",
-                    minimum=64,
-                    maximum=1500
-                )
-                
-                predict_btn = gr.Button("🔍 Analyze Traffic", variant="primary", size="lg")
-                
-                gr.Markdown("### Quick Test Scenarios")
-                with gr.Row():
-                    normal_btn = gr.Button("🟢 Normal Web Traffic", size="sm")
-                    suspicious_btn = gr.Button("🟡 Suspicious Pattern", size="sm")
-                with gr.Row():
-                    flood_btn = gr.Button("🔴 DDoS Flood", size="sm")
-                    slowloris_btn = gr.Button("🟠 Slowloris Attack", size="sm")
-            
-            with gr.Column(scale=1):
-                gr.Markdown("### Detection Results")
-                
-                status_output = gr.Textbox(
-                    label="Detection Status", 
-                    interactive=False,
-                    lines=1
-                )
-                
-                with gr.Row():
-                    confidence_output = gr.Textbox(
-                        label="Confidence Level", 
-                        interactive=False
-                    )
-                    error_output = gr.Textbox(
-                        label="Reconstruction Error", 
-                        interactive=False
-                    )
-                    risk_output = gr.Textbox(
-                        label="Risk Score", 
-                        interactive=False
-                    )
-                
-                json_output = gr.Code(
-                    label="Detailed Analysis (JSON)", 
-                    language="json",
-                    lines=15
-                )
-    
-    with gr.Tab("📊 Batch Processing"):
-        gr.Markdown("### Upload CSV file for batch analysis")
-        gr.Markdown("CSV file should contain columns: `inter_arrival_time`, `packet_length`")
+def check_measurement_data(bucket, measurement, org, timeout=10):
+    """Check if specific measurement exists"""
+    try:
+        client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=org, timeout=timeout*1000)
+        query_api = client.query_api()
         
-        with gr.Row():
-            with gr.Column():
-                file_input = gr.File(
-                    label="Upload CSV File",
-                    file_types=[".csv"],
-                    type="filepath"
-                )
-                batch_btn = gr.Button("🔄 Process Batch", variant="primary")
-            
-            with gr.Column():
-                batch_results = gr.Textbox(
-                    label="Batch Results Summary",
-                    lines=10,
-                    interactive=False
-                )
-                
-                download_results = gr.File(
-                    label="Download Results",
-                    interactive=False
-                )
-    
-    with gr.Tab("📚 API Documentation"):
-        gr.Markdown("""
-        ## REST API Endpoint
+        measurement_query = f'''
+        from(bucket: "{bucket}")
+          |> range(start: -24h)
+          |> filter(fn: (r) => r._measurement == "{measurement}")
+          |> limit(n: 1)
+        '''
         
-        **POST** `/predict`
+        result = query_api.query_data_frame(org=org, query=measurement_query)
+        client.close()
         
-        ### Request Format:
-        ```json
-        {
-            "inter_arrival_time": 0.02,
-            "packet_length": 800
+        return result is not None and not result.empty
+        
+    except Exception as e:
+        return False
+
+def run_diagnostic_query(query_name, query, org, timeout=10):
+    """Run diagnostic query with error handling"""
+    try:
+        client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=org, timeout=timeout*1000)
+        query_api = client.query_api()
+        
+        start_time = time.time()
+        result = query_api.query_data_frame(org=org, query=query)
+        elapsed = time.time() - start_time
+        
+        client.close()
+        
+        return {
+            'success': True,
+            'result': result,
+            'elapsed': elapsed,
+            'records': len(result) if result is not None and not result.empty else 0
         }
-        ```
         
-        ### Response Format:
-        ```json
-        {
-            "anomaly": 0,
-            "reconstruction_error": 0.123456,
-            "confidence": 0.85,
-            "anomaly_score": -0.234,
-            "risk_score": 0.15,
-            "anomaly_type": "Normal_Traffic",
-            "model_version": "advanced_isolation_forest_v2.1",
-            "processing_time": 0.045,
-            "timestamp": "2024-01-15T10:30:45.123456",
-            "features_used": ["inter_arrival_time", "packet_length"],
-            "feature_importance": {
-                "inter_arrival_time": 0.6,
-                "packet_length": 0.4
-            },
-            "input_validation": {
-                "inter_arrival_time_valid": true,
-                "packet_length_valid": true,
-                "input_normalized": true
-            },
-            "model_info": {
-                "algorithm": "Isolation Forest",
-                "training_timestamp": "2024-01-15T09:00:00.000000",
-                "contamination_rate": 0.15
-            }
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e),
+            'elapsed': 0,
+            'records': 0
         }
-        ```
+
+# --- Tab 1: Overview ---
+with tab1:
+    st.subheader("📊 Analytical Dashboard")
+    
+    # System Status Overview
+    st.subheader("**System Status**")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        if st.session_state.api_status == "Online":
+            st.success("🟢 ML API: Online")
+        elif st.session_state.api_status == "Offline":
+            st.error("🔴 ML API: Offline")
+        else:
+            st.warning("🟡 ML API: Unknown")
+    
+    with col2:
+        if use_mock_api:
+            st.info("🧪 Mode: Mock API")
+        else:
+            st.info("🔗 Mode: Live API")
+    
+    with col3:
+        st.info(f"🎯 Threshold: {thresh}")
+    
+    with col4:
+        if st.session_state.working_api_url:
+            st.success("✅ API Found")
+        else:
+            st.warning("⚠️ No API")
+    
+    # Performance overview
+    if st.session_state.query_performance:
+        st.subheader("**Performance Metrics**")
+        perf_df = pd.DataFrame(st.session_state.query_performance)
+        avg_query_time = perf_df['query_time'].mean()
+        last_query_time = perf_df['query_time'].iloc[-1]
         
-        ### Field Descriptions:
-        - **anomaly**: `1` if traffic is anomalous, `0` if normal
-        - **reconstruction_error**: Anomaly score (0-1, higher = more anomalous)
-        - **confidence**: Model confidence in prediction (0-1)
-        - **risk_score**: Overall risk assessment (0-1)
-        - **anomaly_type**: Specific classification of detected pattern
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Avg Query Time", f"{avg_query_time:.2f}s")
+        col2.metric("Last Query Time", f"{last_query_time:.2f}s")
+        col3.metric("Total Queries", len(perf_df))
+        col4.metric("Cache TTL", f"{cache_ttl}s")
+    
+    # Detection Metrics
+    if st.session_state.historical_data:
+        st.subheader("**Detection Results**")
+        df_hist = pd.DataFrame(st.session_state.historical_data)
         
-        ### Anomaly Types:
-        - `Normal_Traffic`: Regular network activity
-        - `DDoS_Flood_Attack`: High-frequency large packet flood
-        - `Slowloris_Attack`: Slow, low-bandwidth attack
-        - `Amplification_Attack`: Large packet amplification
-        - `High_Frequency_Attack`: Rapid packet transmission
-        - `Suspicious_Activity`: Potentially malicious but unclear
+        col1, col2, col3, col4 = st.columns(4)
         
-        ### Example Usage (Python):
-        ```python
-        import requests
+        total_records = len(df_hist)
+        anomaly_count = df_hist['anomaly'].sum() if 'anomaly' in df_hist.columns else 0
+        normal_count = total_records - anomaly_count
+        anomaly_rate = (anomaly_count / total_records * 100) if total_records > 0 else 0
         
-        response = requests.post(
-            "https://violabirech-dos-anomalies-detection.hf.space/predict",
-            json={
-                "inter_arrival_time": 0.001,
-                "packet_length": 1400
-            }
+        col1.metric("Total Records", total_records)
+        col2.metric("Normal Traffic", normal_count)
+        col3.metric("Anomalies Detected", anomaly_count)
+        col4.metric("Anomaly Rate", f"{anomaly_rate:.1f}%")
+        
+        # Anomaly distribution pie chart
+        if total_records > 0:
+            st.subheader("**Traffic Classification**")
+            
+            fig_pie = go.Figure(data=[go.Pie(
+                labels=['Normal Traffic', 'Anomalous Traffic'],
+                values=[normal_count, anomaly_count],
+                hole=.3,
+                marker_colors=['#2E8B57', '#DC143C']
+            )])
+            
+            fig_pie.update_layout(
+                title="Network Traffic Distribution",
+                annotations=[dict(text=f'{anomaly_rate:.1f}%<br>Anomalies', x=0.5, y=0.5, font_size=16, showarrow=False)]
+            )
+            
+            st.plotly_chart(fig_pie, use_container_width=True)
+            
+            # Time series plot
+            if len(df_hist) > 1:
+                st.subheader("**Anomaly Detection Timeline**")
+                
+                df_hist['timestamp'] = pd.to_datetime(df_hist['timestamp'])
+                df_hist = df_hist.sort_values('timestamp')
+                
+                fig_ts = px.scatter(
+                    df_hist, 
+                    x="timestamp", 
+                    y="reconstruction_error",
+                    color="anomaly",
+                    title="Reconstruction Error Over Time",
+                    color_discrete_map={0: '#2E8B57', 1: '#DC143C'},
+                    labels={'anomaly': 'Traffic Type', 'reconstruction_error': 'Reconstruction Error'}
+                )
+                fig_ts.add_hline(y=thresh, line_dash="dash", line_color="orange", annotation_text=f"Threshold ({thresh})")
+                
+                # Update legend
+                fig_ts.for_each_trace(lambda t: t.update(name="Normal Traffic" if t.name == "0" else "Anomalous Traffic"))
+                
+                st.plotly_chart(fig_ts, use_container_width=True)
+        
+        # Query performance chart
+        if st.session_state.query_performance:
+            st.subheader("**System Performance**")
+            
+            perf_df = pd.DataFrame(st.session_state.query_performance)
+            perf_df['timestamp'] = pd.to_datetime(perf_df['timestamp'])
+            
+            fig_perf = px.line(
+                perf_df,
+                x="timestamp",
+                y="query_time",
+                title="Database Query Performance",
+                labels={"query_time": "Query Time (seconds)", "timestamp": "Time"}
+            )
+            fig_perf.update_traces(line_color='#1f77b4')
+            st.plotly_chart(fig_perf, use_container_width=True)
+    
+    else:
+        st.info("📊 No data collected yet. Start monitoring to see analytics.")
+        
+        # Show sample data generation option
+        st.subheader("**Generate Sample Data for Testing**")
+        if st.button("🎲 Generate Sample Detection Data", type="secondary"):
+            # Generate some sample data for demonstration
+            sample_data = []
+            for i in range(20):
+                inter_arrival = np.random.exponential(0.05)
+                packet_len = np.random.normal(800, 200)
+                
+                result = mock_predict_anomaly(inter_arrival, packet_len)
+                result.update({
+                    "timestamp": datetime.now() - timedelta(minutes=i),
+                    "inter_arrival_time": inter_arrival,
+                    "packet_length": packet_len,
+                    "source_ip": f"192.168.1.{np.random.randint(1, 255)}",
+                    "dest_ip": "192.168.1.1"
+                })
+                sample_data.append(result)
+            
+            st.session_state.historical_data.extend(sample_data)
+            st.success("✅ Generated 20 sample detection records!")
+            st.rerun()
+
+# --- Tab 2: Live Stream ---
+with tab2:
+    st.subheader("📡 Real-Time Monitoring")
+    
+    # Quick status check
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔍 Quick Data Check"):
+            with st.spinner("Checking data availability..."):
+                has_data = check_bucket_data(INFLUXDB_BUCKET, INFLUXDB_ORG)
+                has_measurement = check_measurement_data(INFLUXDB_BUCKET, INFLUXDB_MEASUREMENT, INFLUXDB_ORG)
+                
+                if has_data:
+                    st.success("✅ Bucket has data")
+                else:
+                    st.warning("⚠️ No data in bucket")
+                
+                if has_measurement:
+                    st.success("✅ Measurement exists")
+                else:
+                    st.warning("⚠️ Measurement not found")
+    
+    with col2:
+        if st.button("🔄 Manual Refresh"):
+            st.rerun()
+    
+    # Live monitoring section
+    if st.session_state.monitoring_active:
+        # Fetch fresh data with performance monitoring
+        result = get_influx_data_optimized(
+            time_window, 
+            INFLUXDB_BUCKET, 
+            INFLUXDB_MEASUREMENT, 
+            INFLUXDB_ORG, 
+            max_records,
+            query_timeout
         )
         
-        result = response.json()
-        print(f"Anomaly detected: {result['anomaly']}")
-        print(f"Risk score: {result['risk_score']}")
-        ```
-        """)
-    
-    with gr.Tab("ℹ️ Model Information"):
-        gr.Markdown(f"""
-        ## Model Details
+        df, query_time = result if result else (None, 0)
         
-        **Algorithm**: Isolation Forest with Advanced Feature Engineering
-        **Version**: {detector.model_version}
-        **Training Status**: {'✅ Trained' if detector.is_trained else '❌ Not Trained'}
-        **Training Time**: {detector.training_timestamp.strftime('%Y-%m-%d %H:%M:%S') if detector.training_timestamp else 'N/A'}
+        if df is not None and not df.empty:
+            # Check required columns
+            required_cols = ['inter_arrival_time', 'packet_length']
+            available_cols = [col for col in required_cols if col in df.columns]
+            
+            if len(available_cols) >= 2:
+                df_clean = df.dropna(subset=available_cols)
+                
+                if len(df_clean) > 0:
+                    col1, col2, col3 = st.columns(3)
+                    col1.success(f"✅ Processing {len(df_clean)} records")
+                    col2.info(f"⏱️ Query time: {query_time:.2f}s")
+                    col3.info(f"📊 From: {time_window}")
+                    
+                    # Process predictions
+                    predictions = process_batch_predictions_optimized(df_clean)
+                    
+                    if predictions:
+                        df_pred = pd.DataFrame(predictions)
+                        df_pred["timestamp"] = pd.to_datetime(df_pred["timestamp"])
+                        
+                        # Display live data table
+                        st.subheader("**Live Data Stream**")
+                        
+                        # Color-code anomalies
+                        def highlight_anomalies(row):
+                            if row['anomaly'] == 1:
+                                return ['background-color: #ffcccc'] * len(row)
+                            return [''] * len(row)
+                        
+                        display_df = df_pred[[
+                            "timestamp", "source_ip", "dest_ip", "inter_arrival_time", 
+                            "packet_length", "reconstruction_error", "anomaly", "anomaly_type"
+                        ]].copy()
+                        
+                        styled_df = display_df.style.apply(highlight_anomalies, axis=1)
+                        st.dataframe(styled_df, use_container_width=True, height=400)
+                        
+                        # Real-time metrics
+                        anomalies_in_batch = df_pred['anomaly'].sum()
+                        if anomalies_in_batch > 0:
+                            st.error(f"🚨 {anomalies_in_batch} anomalies detected in this batch!")
+                            
+                            # Show anomaly types
+                            anomaly_types = df_pred[df_pred['anomaly'] == 1]['anomaly_type'].value_counts()
+                            st.write("**Detected Attack Types:**")
+                            for attack_type, count in anomaly_types.items():
+                                st.write(f"  • {attack_type}: {count}")
+                        else:
+                            st.success("✅ No anomalies detected in this batch")
+                        
+                    else:
+                        st.warning("⚠️ No predictions generated")
+                else:
+                    st.warning("⚠️ No valid data after cleaning")
+            else:
+                st.error(f"❌ Missing required columns. Available: {df.columns.tolist()}")
+        else:
+            st.warning(f"⚠️ No data retrieved from InfluxDB (query took {query_time:.2f}s)")
         
-        ### Features Used:
-        1. **Inter-arrival Time**: Time between consecutive packets
-        2. **Packet Length**: Size of network packets in bytes
+        # Auto-refresh logic
+        if auto_refresh:
+            time.sleep(refresh_interval)
+            st.rerun()
+    
+    else:
+        st.info("▶️ Click 'Start' in the sidebar to begin monitoring")
         
-        ### Detection Capabilities:
-        - **DDoS Flood Attacks**: High-frequency, large packet attacks
-        - **Slowloris Attacks**: Slow, persistent connection attacks  
-        - **Amplification Attacks**: Large response packet attacks
-        - **Suspicious Patterns**: Unusual but not clearly malicious traffic
-        
-        ### Model Performance:
-        - **Training Data**: 5,000 synthetic network traffic samples
-        - **Contamination Rate**: 15% (expected anomaly rate)
-        - **Feature Importance**: Dynamic calculation based on training data
-        - **Processing Time**: < 50ms average per prediction
-        
-        ### Validation:
-        - Input validation for realistic network parameters
-        - Packet length: 64-1500 bytes (standard Ethernet frame)
-        - Inter-arrival time: 0-60 seconds (reasonable range)
-        - Automatic normalization and scaling
-        """)
-    
-    # Event handlers
-    predict_btn.click(
-        predict_dos_anomaly,
-        inputs=[inter_arrival_input, packet_length_input],
-        outputs=[status_output, confidence_output, error_output, risk_output, json_output]
-    )
-    
-    # Quick test buttons
-    normal_btn.click(
-        lambda: (0.1, 650),
-        outputs=[inter_arrival_input, packet_length_input]
-    )
-    
-    suspicious_btn.click(
-        lambda: (0.02, 1100),
-        outputs=[inter_arrival_input, packet_length_input]
-    )
-    
-    flood_btn.click(
-        lambda: (0.0005, 1450),
-        outputs=[inter_arrival_input, packet_length_input]
-    )
-    
-    slowloris_btn.click(
-        lambda: (8.0, 150),
-        outputs=[inter_arrival_input, packet_length_input]
-    )
-    
-    # Batch processing
-    batch_btn.click(
-        batch_predict,
-        inputs=[file_input],
-        outputs=[batch_results, download_results]
-    )
-
-# Custom API endpoint for direct JSON responses
-def predict_api(inter_arrival_time: float, packet_length: float):
-    """Direct API function that returns JSON (for programmatic access)"""
-    return detector.predict(inter_arrival_time, packet_length)
-
-# Launch the application
-if __name__ == "__main__":
-    logger.info("Starting DoS Anomaly Detection API...")
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        share=False,
-        show_error=True
-    )
+        # Manual mode data fetch
+        if st.button("📊 Fetch Data Now", type="primary"):
+            with st.spinner("Fet
