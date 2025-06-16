@@ -25,7 +25,7 @@ query_api = client.query_api()
 # --- Query Data from InfluxDB ---
 query = f'''
 from(bucket: "{INFLUXDB_BUCKET}")
-  |> range(start: -1h)
+  |> range(start: -12h)
   |> filter(fn: (r) => r["_measurement"] == "{MEASUREMENT}")
   |> filter(fn: (r) => r["_field"] == "packet_rate" or r["_field"] == "packet_length" or r["_field"] == "inter_arrival_time")
   |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
