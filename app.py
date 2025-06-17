@@ -30,10 +30,10 @@ INFLUXDB_URL = "https://us-east-1-1.aws.cloud2.influxdata.com"
 import os
 
 # --- ✅ SECURITY FIX: Secure token loading ---
+
 try:
     INFLUXDB_TOKEN = st.secrets["INFLUXDB_TOKEN"]
 except:
-    # Hugging Face fallback
     INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN")
     if not INFLUXDB_TOKEN:
         st.error("🚨 InfluxDB token not found in secrets or environment!")
