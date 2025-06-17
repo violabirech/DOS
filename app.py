@@ -72,18 +72,18 @@ INFLUXDB_BUCKET = "realtime"
 INFLUXDB_MEASUREMENT = "network_traffic"
 
 # --- Initialize session state ---
-if 'monitoring_active' not in st.session_state:
-    st.session_state.monitoring_active = False
-if 'historical_data' not in st.session_state:
-    st.session_state.historical_data = []
-if 'anomaly_alerts' not in st.session_state:
-    st.session_state.anomaly_alerts = []
-if 'query_performance' not in st.session_state:
-    st.session_state.query_performance = []
-if 'api_status' not in st.session_state:
-    st.session_state.api_status = "Unknown"
-if 'working_api_url' not in st.session_state:
-    st.session_state.working_api_url = None
+session_defaults = {
+    'monitoring_active': False,
+    'historical_data': [],
+    'anomaly_alerts': [],
+    'query_performance': [],
+    'api_status': "Unknown",
+    'working_api_url': None
+}
+
+for key, default_value in session_defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = default_value
 
 # --- Helper Functions ---
 def mock_predict_anomaly(inter_arrival_time, packet_length):
@@ -335,6 +335,53 @@ def check_bucket_data(bucket, org, timeout=10):
     except Exception as e:
         return False
 
+def validate_influxdb_config():
+    """Validate InfluxDB connection and configuration"""
+    validation_results = {
+        'connection': False,
+        'organization': False,
+        'bucket': False,
+        'permissions': False,
+        'buckets_found': []
+    }
+    
+    if not INFLUXDB_AVAILABLE:
+        return validation_results
+    
+    try:
+        client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
+        buckets_api = BucketsApi(client)
+        
+        buckets = buckets_api.find_buckets()
+        validation_results['connection'] = True
+        validation_results['organization'] = True
+        
+        bucket_names = [bucket.name for bucket in buckets.buckets]
+        validation_results['buckets_found'] = bucket_names
+        
+        if INFLUXDB_BUCKET in bucket_names:
+            validation_results['bucket'] = True
+            
+            query_api = client.query_api()
+            test_query = f'''
+            from(bucket: "{INFLUXDB_BUCKET}")
+              |> range(start: -1h)
+              |> limit(n: 1)
+            '''
+            
+            try:
+                query_api.query_data_frame(org=INFLUXDB_ORG, query=test_query)
+                validation_results['permissions'] = True
+            except:
+                validation_results['permissions'] = False
+        
+        client.close()
+        
+    except Exception as e:
+        st.error(f"Connection validation failed: {e}")
+    
+    return validation_results
+
 # --- Sidebar Controls ---
 st.sidebar.title("🔧 Controls")
 
@@ -359,6 +406,11 @@ refresh_interval = st.sidebar.selectbox("Refresh Interval", [5, 10, 15, 30, 60],
 time_window = st.sidebar.selectbox("Time Range", ["-5m", "-15m", "-1h", "-6h", "-12h", "-1d", "-7d", "-30d"], index=0)
 thresh = st.sidebar.slider("Anomaly Threshold", 0.01, 1.0, 0.1, 0.01)
 max_records = st.sidebar.slider("Max Records to Process", 10, 100, 25, 10)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("⚡ Performance Settings")
+query_timeout = st.sidebar.slider("Query Timeout (seconds)", 5, 60, 15, 5)
+cache_ttl = st.sidebar.slider("Cache TTL (seconds)", 30, 300, 60, 30)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🎛️ Monitoring Controls")
@@ -396,8 +448,10 @@ with status_col3:
 
 with status_col4:
     if st.session_state.historical_data:
-        last_update = max([d['timestamp'] for d in st.session_state.historical_data])
-        st.write(f"📅 Last Update: {last_update}")
+        timestamps = [pd.to_datetime(d['timestamp']) for d in st.session_state.historical_data if 'timestamp' in d]
+        if timestamps:
+            last_update = max(timestamps).strftime("%Y-%m-%d %H:%M:%S")
+            st.write(f"📅 Last Update: {last_update}")
 
 # API Status indicator
 api_status_col1, api_status_col2, api_status_col3 = st.columns([1, 1, 2])
@@ -446,7 +500,7 @@ with tab1:
             
             # ✅ FIXED: Complete pie chart definition
             fig_pie = go.Figure(data=[go.Pie(
-                labels=['Normal Traffic', 'Anomalous Traffic'],  # ✅ Fixed syntax error
+                labels=['Normal Traffic', 'Anomalous Traffic'],
                 values=[normal_count, anomaly_count],
                 hole=.3,
                 marker_colors=['#2E8B57', '#DC143C']
@@ -511,7 +565,6 @@ with tab2:
         if st.button("🔍 Quick Data Check"):
             with st.spinner("Checking data availability..."):
                 has_data = check_bucket_data(INFLUXDB_BUCKET, INFLUXDB_ORG)
-                
                 if has_data:
                     st.success("✅ Bucket has data")
                 else:
@@ -540,7 +593,6 @@ with tab2:
         st.session_state.historical_data.extend(sample_data)
         
         df_pred = pd.DataFrame(sample_data)
-        
         st.subheader("**Live Data Stream**")
         
         def highlight_anomalies(row):
@@ -565,25 +617,4 @@ with tab2:
             for attack_type, count in anomaly_types.items():
                 st.write(f"  • {attack_type}: {count}")
         else:
-            st.success("✅ No anomalies detected in this batch")  # ✅ FIXED: Added required content
-
-# --- Tab 3: Manual Entry ---
-with tab3:
-    st.subheader("🔧 Manual Entry for Testing")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        manual_inter_arrival = st.number_input(
-            "Inter-arrival Time (seconds)", 
-            min_value=0.0001, 
-            max_value=10.0, 
-            value=0.02, 
-            step=0.001,
-            format="%.4f",
-            help="Time between packets. Lower values may indicate flooding attacks."
-        )
-        
-        manual_source_ip = st.text_input("Source IP", value="192.168.1.100")
-    
-    with col2:
+            st.success("✅ No anomalies detected in this batch")  #
