@@ -10,8 +10,8 @@ from datetime import datetime, timezone
 from streamlit_autorefresh import st_autorefresh
 
 # --- Streamlit Config ---
-st.set_page_config(page_title="🚨 DoS Anomaly Detection", layout="wide")
-st.title("🚨 Real-Time DoS Detection Dashboard")
+st.set_page_config(page_title=" DoS Anomaly Detection", layout="wide")
+st.title(" Real-Time DoS Detection Dashboard")
 
 # --- InfluxDB Settings ---
 INFLUXDB_URL = "https://us-east-1-1.aws.cloud2.influxdata.com"
