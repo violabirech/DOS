@@ -18,7 +18,6 @@ import os
 warnings.filterwarnings('ignore')
 
 # --- Configuration ---
-# ✅ FIXED: Corrected API URL to include /api/predict
 PRIMARY_API_URL = "https://violabirech-dos-anomalies-detection.hf.space/api/predict" 
 BACKUP_API_URLS = [
     "https://violabirech-dos-anomalies-detection.hf.space/predict",
@@ -28,16 +27,44 @@ BACKUP_API_URLS = [
 
 INFLUXDB_URL = "https://us-east-1-1.aws.cloud2.influxdata.com"
 
-# --- ✅ SECURITY FIX: Secure token loading ---
+# --- ✅ ENHANCED SECURE TOKEN LOADING ---
+INFLUXDB_TOKEN = None
+INFLUXDB_AVAILABLE = False
 
 try:
-    INFLUXDB_TOKEN = st.secrets["INFLUXDB_TOKEN"]
+    # Try Streamlit secrets first
+    INFLUXDB_TOKEN = st.secrets.get("INFLUXDB_TOKEN")
+    if INFLUXDB_TOKEN:
+        INFLUXDB_AVAILABLE = True
+        st.sidebar.success("🔐 Using InfluxDB token from secrets")
 except:
-    INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN")
-    if not INFLUXDB_TOKEN:
-        st.error("🚨 InfluxDB token not found in secrets or environment!")
-        st.stop()
+    pass
 
+if not INFLUXDB_TOKEN:
+    try:
+        # Try environment variable
+        INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN")
+        if INFLUXDB_TOKEN:
+            INFLUXDB_AVAILABLE = True
+            st.sidebar.success("🔐 Using InfluxDB token from environment")
+    except:
+        pass
+
+if not INFLUXDB_TOKEN:
+    # Allow manual token input as fallback
+    st.sidebar.warning("⚠️ InfluxDB token not found in secrets or environment")
+    manual_token = st.sidebar.text_input(
+        "Enter InfluxDB Token (optional)", 
+        type="password",
+        help="Enter your InfluxDB token to enable database features"
+    )
+    if manual_token:
+        INFLUXDB_TOKEN = manual_token
+        INFLUXDB_AVAILABLE = True
+        st.sidebar.success("🔐 Using manually entered token")
+
+if not INFLUXDB_AVAILABLE:
+    st.sidebar.info("🧪 Running in mock data mode - InfluxDB features disabled")
 
 INFLUXDB_ORG = "Anormally Detection"
 INFLUXDB_BUCKET = "realtime"
@@ -231,6 +258,10 @@ def generate_realistic_mock_data(num_records=50):
 @st.cache_data(ttl=60)
 def get_influx_data_optimized(time_range, bucket, measurement, org, limit=50, timeout=15):
     """Enhanced InfluxDB query with fallback to mock data"""
+    if not INFLUXDB_AVAILABLE:
+        st.info("🧪 Using mock data - InfluxDB not available")
+        return generate_realistic_mock_data(limit), 0.1
+    
     try:
         start_time = time.time()
         
@@ -356,6 +387,9 @@ def process_batch_predictions_optimized(df):
 
 def check_bucket_data(bucket, org, timeout=10):
     """Quick check if bucket contains any data"""
+    if not INFLUXDB_AVAILABLE:
+        return False
+    
     try:
         client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=org, timeout=timeout*1000)
         query_api = client.query_api()
@@ -376,6 +410,9 @@ def check_bucket_data(bucket, org, timeout=10):
 
 def check_measurement_data(bucket, measurement, org, timeout=10):
     """Check if specific measurement exists"""
+    if not INFLUXDB_AVAILABLE:
+        return False
+    
     try:
         client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=org, timeout=timeout*1000)
         query_api = client.query_api()
@@ -394,74 +431,6 @@ def check_measurement_data(bucket, measurement, org, timeout=10):
         
     except Exception as e:
         return False
-
-def discover_influxdb_buckets():
-    """Discover all available buckets in your InfluxDB organization"""
-    try:
-        client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
-        buckets_api = BucketsApi(client)
-        
-        buckets = buckets_api.find_buckets()
-        
-        bucket_list = []
-        for bucket in buckets.buckets:
-            bucket_list.append({
-                'name': bucket.name,
-                'id': bucket.id,
-                'retention_rules': str(bucket.retention_rules),
-                'created_at': bucket.created_at
-            })
-        
-        client.close()
-        return bucket_list
-        
-    except Exception as e:
-        st.error(f"❌ Error discovering buckets: {e}")
-        return []
-
-def validate_influxdb_config():
-    """Validate InfluxDB connection and configuration"""
-    validation_results = {
-        'connection': False,
-        'organization': False,
-        'bucket': False,
-        'permissions': False,
-        'buckets_found': []
-    }
-    
-    try:
-        client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
-        buckets_api = BucketsApi(client)
-        
-        buckets = buckets_api.find_buckets()
-        validation_results['connection'] = True
-        validation_results['organization'] = True
-        
-        bucket_names = [bucket.name for bucket in buckets.buckets]
-        validation_results['buckets_found'] = bucket_names
-        
-        if INFLUXDB_BUCKET in bucket_names:
-            validation_results['bucket'] = True
-            
-            query_api = client.query_api()
-            test_query = f'''
-            from(bucket: "{INFLUXDB_BUCKET}")
-              |> range(start: -1h)
-              |> limit(n: 1)
-            '''
-            
-            try:
-                query_api.query_data_frame(org=INFLUXDB_ORG, query=test_query)
-                validation_results['permissions'] = True
-            except:
-                validation_results['permissions'] = False
-        
-        client.close()
-        
-    except Exception as e:
-        st.error(f"Connection validation failed: {e}")
-    
-    return validation_results
 
 # --- Sidebar Controls ---
 st.sidebar.title("🔧 Controls")
@@ -509,19 +478,6 @@ if st.sidebar.button("🗑️ Clear History"):
     st.session_state.anomaly_alerts = []
     st.session_state.query_performance = []
     st.rerun()
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("🔧 Configuration Override")
-custom_bucket = st.sidebar.text_input("Bucket Name", value=INFLUXDB_BUCKET)
-custom_measurement = st.sidebar.text_input("Measurement Name", value=INFLUXDB_MEASUREMENT)
-custom_org = st.sidebar.text_input("Organization", value=INFLUXDB_ORG)
-
-if custom_bucket:
-    INFLUXDB_BUCKET = custom_bucket
-if custom_measurement:
-    INFLUXDB_MEASUREMENT = custom_measurement
-if custom_org:
-    INFLUXDB_ORG = custom_org
 
 # --- Title ---
 st.title("🚀 Real-Time DoS Anomaly Detection Dashboard")
@@ -617,12 +573,6 @@ with tab1:
         if total_records > 0:
             st.subheader("**Traffic Classification**")
             
-            fig_pie = go.Figure(data=[
-    go.Pie(
-        labels=["Normal Traffic", "Anomalies"],
-        values=[normal_count, anomaly_count],
-        hole=0.4,
-        textinfo="label+percent"
-    )
-])
-
+            # ✅ Fixed: Complete pie chart definition
+            fig_pie = go.Figure(data=[go.Pie(
+                labels=['Normal Traffic', '
