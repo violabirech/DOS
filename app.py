@@ -26,13 +26,18 @@ BACKUP_API_URLS = [
 ]
 
 INFLUXDB_URL = "https://us-east-1-1.aws.cloud2.influxdata.com"
+
+import os
+
 # --- ✅ SECURITY FIX: Secure token loading ---
 try:
     INFLUXDB_TOKEN = st.secrets["INFLUXDB_TOKEN"]
-except KeyError:
-    st.error("🚨 InfluxDB token not found in Streamlit secrets!")
-    INFLUXDB_TOKEN = "DfmvA8hl5EeOcpR-d6c_ep6dRtSRbEcEM_Zqp8-1746dURtVqMDGni4rRNQbHouhqmdC7t9Kj6Y-AyOjbBg-zg=="
-    st.stop()
+except:
+    # Hugging Face fallback
+    INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN")
+    if not INFLUXDB_TOKEN:
+        st.error("🚨 InfluxDB token not found in secrets or environment!")
+        st.stop()
 
 
 INFLUXDB_ORG = "Anormally Detection"
