@@ -32,7 +32,7 @@ try:
     INFLUXDB_TOKEN = st.secrets["INFLUXDB_TOKEN"]
 except KeyError:
     st.error("🚨 InfluxDB token not found in Streamlit secrets!")
-    st.info("Please create a `.streamlit/secrets.toml` file and add: `INFLUXDB_TOKEN = \"your_token_here\"`")
+    INFLUXDB_TOKEN = "DfmvA8hl5EeOcpR-d6c_ep6dRtSRbEcEM_Zqp8-1746dURtVqMDGni4rRNQbHouhqmdC7t9Kj6Y-AyOjbBg-zg=="
     st.stop()
 
 INFLUXDB_ORG = "Anormally Detection"
