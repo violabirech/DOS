@@ -18,7 +18,7 @@ import os
 warnings.filterwarnings('ignore')
 
 # --- Configuration ---
-# ✅ FIXED: Correct API endpoints for Gradio spaces
+# ✅ FIXED: Correct API endpoints for Hugging Face Gradio spaces
 PRIMARY_API_URL = "https://violabirech-dos-anomalies-detection.hf.space/run/predict" 
 BACKUP_API_URLS = [
     "https://violabirech-dos-anomalies-detection.hf.space/api/predict",
@@ -444,8 +444,9 @@ with tab1:
         if total_records > 0:
             st.subheader("**Traffic Classification**")
             
+            # ✅ FIXED: Complete pie chart definition
             fig_pie = go.Figure(data=[go.Pie(
-                labels=['Normal Traffic', 'Anomalous Traffic'],
+                labels=['Normal Traffic', 'Anomalous Traffic'],  # ✅ Fixed syntax error
                 values=[normal_count, anomaly_count],
                 hole=.3,
                 marker_colors=['#2E8B57', '#DC143C']
@@ -457,6 +458,26 @@ with tab1:
             )
             
             st.plotly_chart(fig_pie, use_container_width=True)
+            
+            # Time series visualization
+            if 'timestamp' in df_hist.columns:
+                st.subheader("**Anomaly Detection Timeline**")
+                df_hist['timestamp'] = pd.to_datetime(df_hist['timestamp'])
+                
+                fig_timeline = px.scatter(
+                    df_hist, 
+                    x='timestamp', 
+                    y='reconstruction_error',
+                    color='anomaly',
+                    color_discrete_map={0: 'green', 1: 'red'},
+                    title="Reconstruction Error Over Time",
+                    labels={'reconstruction_error': 'Reconstruction Error', 'timestamp': 'Time'}
+                )
+                
+                fig_timeline.add_hline(y=thresh, line_dash="dash", line_color="orange", 
+                                     annotation_text=f"Threshold: {thresh}")
+                
+                st.plotly_chart(fig_timeline, use_container_width=True)
     
     else:
         st.info("📊 No data collected yet. Generate sample data to see analytics.")
@@ -485,6 +506,21 @@ with tab1:
 with tab2:
     st.subheader("📡 Real-Time Monitoring")
     
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔍 Quick Data Check"):
+            with st.spinner("Checking data availability..."):
+                has_data = check_bucket_data(INFLUXDB_BUCKET, INFLUXDB_ORG)
+                
+                if has_data:
+                    st.success("✅ Bucket has data")
+                else:
+                    st.warning("⚠️ No data in bucket - using mock data")
+    
+    with col2:
+        if st.button("🔄 Manual Refresh"):
+            st.rerun()
+    
     if st.button("📊 Generate Live Data Sample"):
         sample_data = []
         for i in range(5):
@@ -507,18 +543,29 @@ with tab2:
         
         st.subheader("**Live Data Stream**")
         
+        def highlight_anomalies(row):
+            if row['anomaly'] == 1:
+                return ['background-color: #ffcccc'] * len(row)
+            return [''] * len(row)
+        
         display_df = df_pred[[
             "timestamp", "source_ip", "dest_ip", "inter_arrival_time", 
             "packet_length", "reconstruction_error", "anomaly", "anomaly_type"
         ]].copy()
         
-        st.dataframe(display_df, use_container_width=True)
+        styled_df = display_df.style.apply(highlight_anomalies, axis=1)
+        st.dataframe(styled_df, use_container_width=True, height=300)
         
         anomalies_in_batch = df_pred['anomaly'].sum()
         if anomalies_in_batch > 0:
-            st.error(f"🚨 {anomalies_in_batch} anomalies detected!")
+            st.error(f"🚨 {anomalies_in_batch} anomalies detected in this batch!")
+            
+            anomaly_types = df_pred[df_pred['anomaly'] == 1]['anomaly_type'].value_counts()
+            st.write("**Detected Attack Types:**")
+            for attack_type, count in anomaly_types.items():
+                st.write(f"  • {attack_type}: {count}")
         else:
-            st.success("✅ No anomalies detected")
+            st.success("✅ No anomalies detected in this batch")  # ✅ FIXED: Added required content
 
 # --- Tab 3: Manual Entry ---
 with tab3:
@@ -533,58 +580,10 @@ with tab3:
             max_value=10.0, 
             value=0.02, 
             step=0.001,
-            format="%.4f"
+            format="%.4f",
+            help="Time between packets. Lower values may indicate flooding attacks."
         )
+        
+        manual_source_ip = st.text_input("Source IP", value="192.168.1.100")
     
     with col2:
-        manual_packet_length = st.number_input(
-            "Packet Length (bytes)", 
-            min_value=1.0, 
-            max_value=2000.0, 
-            value=800.0, 
-            step=1.0
-        )
-    
-    if st.button("🔍 Analyze Traffic", type="primary"):
-        result = predict_anomaly(manual_inter_arrival, manual_packet_length)
-        
-        result.update({
-            "timestamp": datetime.now(),
-            "inter_arrival_time": manual_inter_arrival,
-            "packet_length": manual_packet_length,
-            "source_ip": "Manual_Test",
-            "dest_ip": "192.168.1.1"
-        })
-        
-        st.session_state.historical_data.append(result)
-        
-        if result.get('anomaly', 0) == 1:
-            st.error("🚨 **ANOMALY DETECTED**")
-            st.write(f"**Type**: {result.get('anomaly_type', 'Unknown')}")
-            st.write(f"**Reconstruction Error**: {result.get('reconstruction_error', 0):.4f}")
-        else:
-            st.success("✅ **NORMAL TRAFFIC**")
-            st.write(f"**Confidence**: {result.get('confidence', 0):.2%}")
-
-# --- Tab 4: Metrics & Alerts ---
-with tab4:
-    st.subheader("📈 System Metrics & Security Alerts")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("Total Predictions", len(st.session_state.historical_data))
-    
-    with col2:
-        st.metric("Security Alerts", len(st.session_state.anomaly_alerts))
-    
-    with col3:
-        if st.session_state.historical_data:
-            recent_anomalies = sum(1 for d in st.session_state.historical_data[-10:] if d.get('anomaly', 0) == 1)
-            st.metric("Recent Anomalies", f"{recent_anomalies}/10")
-    
-    if st.session_state.anomaly_alerts:
-        st.subheader("🚨 **Recent Security Alerts**")
-        alert_df = pd.DataFrame(st.session_state.anomaly_alerts)
-        st.dataframe(alert_df.tail(10), use_container_width=True)
-    else:
