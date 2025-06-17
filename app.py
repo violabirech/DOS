@@ -18,10 +18,11 @@ import os
 warnings.filterwarnings('ignore')
 
 # --- Configuration ---
-PRIMARY_API_URL = "https://violabirech-dos-anomalies-detection.hf.space/api/predict" 
+# ✅ FIXED: Correct API endpoints for Gradio spaces
+PRIMARY_API_URL = "https://violabirech-dos-anomalies-detection.hf.space/run/predict" 
 BACKUP_API_URLS = [
+    "https://violabirech-dos-anomalies-detection.hf.space/api/predict",
     "https://violabirech-dos-anomalies-detection.hf.space/predict",
-    "https://violabirech-dos-anomalies-detection.hf.space/",
     "https://api-inference.huggingface.co/models/violabirech/dos-anomalies-detection"
 ]
 
@@ -165,6 +166,8 @@ def test_all_apis():
                     st.error(f"❌ API {i+1} returned invalid JSON")
             else:
                 st.error(f"❌ API {i+1} returned status {response.status_code}")
+                if response.text:
+                    st.write(f"Response: {response.text[:200]}...")
                     
         except requests.exceptions.Timeout:
             st.error(f"❌ API {i+1} timed out")
@@ -289,22 +292,8 @@ def get_influx_data_optimized(time_range, bucket, measurement, org, limit=50, ti
             data = pd.concat(data, ignore_index=True)
         
         elapsed_time = time.time() - start_time
-        
-        perf_metric = {
-            'timestamp': datetime.now(),
-            'query_time': elapsed_time,
-            'records_returned': len(data) if data is not None and not data.empty else 0,
-            'time_range': time_range,
-            'limit': limit
-        }
-        st.session_state.query_performance.append(perf_metric)
-        
-        if len(st.session_state.query_performance) > 50:
-            st.session_state.query_performance = st.session_state.query_performance[-50:]
-        
         client.close()
         
-        # Check if we got valid data
         if data is not None and not data.empty:
             st.success(f"✅ Retrieved {len(data)} records from InfluxDB")
             return data, elapsed_time
@@ -323,68 +312,6 @@ def get_influx_data_optimized(time_range, bucket, measurement, org, limit=50, ti
         st.info("🔄 Automatically switching to mock data for demonstration.")
         return generate_realistic_mock_data(limit), error_time
 
-def process_batch_predictions_optimized(df):
-    """Optimized batch processing with progress indicators"""
-    predictions = []
-    
-    if df.empty:
-        return predictions
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    total_records = min(len(df), max_records)
-    processed_df = df.head(total_records)
-    
-    for i, (index, row) in enumerate(processed_df.iterrows()):
-        if not st.session_state.monitoring_active:
-            break
-            
-        try:
-            result = predict_anomaly(row['inter_arrival_time'], row['packet_length'])
-            
-            if 'error' not in result:
-                result.update({
-                    "timestamp": row["_time"],
-                    "inter_arrival_time": row['inter_arrival_time'],
-                    "packet_length": row['packet_length'],
-                    "label": row.get("label", None),
-                    "source_ip": row.get("source_ip", "Unknown"),
-                    "dest_ip": row.get("dest_ip", "Unknown"),
-                    "dns_rate": row.get("dns_rate", 1.0)
-                })
-                predictions.append(result)
-                
-                st.session_state.historical_data.append(result)
-                
-                if result.get('anomaly', 0) == 1:
-                    alert = {
-                        "timestamp": result["timestamp"],
-                        "severity": "HIGH" if result.get('reconstruction_error', 0) > thresh * 2 else "MEDIUM",
-                        "message": f"Anomaly detected: {result.get('anomaly_type', 'Unknown')} - Error: {result.get('reconstruction_error', 0):.4f}",
-                        "source_ip": result.get("source_ip", "Unknown"),
-                        "anomaly_type": result.get("anomaly_type", "Unknown")
-                    }
-                    st.session_state.anomaly_alerts.append(alert)
-            
-            progress = (i + 1) / total_records
-            progress_bar.progress(progress)
-            status_text.text(f"Processed {i + 1}/{total_records} records")
-            
-        except Exception as e:
-            continue
-    
-    progress_bar.empty()
-    status_text.empty()
-    
-    if len(st.session_state.historical_data) > 1000:
-        st.session_state.historical_data = st.session_state.historical_data[-1000:]
-    
-    if len(st.session_state.anomaly_alerts) > 100:
-        st.session_state.anomaly_alerts = st.session_state.anomaly_alerts[-100:]
-    
-    return predictions
-
 def check_bucket_data(bucket, org, timeout=10):
     """Quick check if bucket contains any data"""
     if not INFLUXDB_AVAILABLE:
@@ -401,30 +328,6 @@ def check_bucket_data(bucket, org, timeout=10):
         '''
         
         result = query_api.query_data_frame(org=org, query=basic_query)
-        client.close()
-        
-        return result is not None and not result.empty
-        
-    except Exception as e:
-        return False
-
-def check_measurement_data(bucket, measurement, org, timeout=10):
-    """Check if specific measurement exists"""
-    if not INFLUXDB_AVAILABLE:
-        return False
-    
-    try:
-        client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=org, timeout=timeout*1000)
-        query_api = client.query_api()
-        
-        measurement_query = f'''
-        from(bucket: "{bucket}")
-          |> range(start: -24h)
-          |> filter(fn: (r) => r._measurement == "{measurement}")
-          |> limit(n: 1)
-        '''
-        
-        result = query_api.query_data_frame(org=org, query=measurement_query)
         client.close()
         
         return result is not None and not result.empty
@@ -456,11 +359,6 @@ refresh_interval = st.sidebar.selectbox("Refresh Interval", [5, 10, 15, 30, 60],
 time_window = st.sidebar.selectbox("Time Range", ["-5m", "-15m", "-1h", "-6h", "-12h", "-1d", "-7d", "-30d"], index=0)
 thresh = st.sidebar.slider("Anomaly Threshold", 0.01, 1.0, 0.1, 0.01)
 max_records = st.sidebar.slider("Max Records to Process", 10, 100, 25, 10)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("⚡ Performance Settings")
-query_timeout = st.sidebar.slider("Query Timeout (seconds)", 5, 60, 15, 5)
-cache_ttl = st.sidebar.slider("Cache TTL (seconds)", 30, 300, 60, 30)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🎛️ Monitoring Controls")
@@ -528,34 +426,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏠 Overview", "📊 Live Stream", "�
 with tab1:
     st.subheader("📊 Analytical Dashboard")
     
-    st.subheader("**System Status**")
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        if st.session_state.api_status == "Online":
-            st.success("🟢 ML API: Online")
-        elif st.session_state.api_status == "Offline":
-            st.error("🔴 ML API: Offline")
-        else:
-            st.warning("🟡 ML API: Unknown")
-    
-    with col2:
-        if use_mock_api:
-            st.info("🧪 Mode: Mock API")
-        else:
-            st.info("🔗 Mode: Live API")
-    
-    with col3:
-        st.info(f"🎯 Threshold: {thresh}")
-    
-    with col4:
-        if st.session_state.working_api_url:
-            st.success("✅ API Found")
-        else:
-            st.warning("⚠️ No API")
-    
     if st.session_state.historical_data:
-        st.subheader("**Detection Results**")
         df_hist = pd.DataFrame(st.session_state.historical_data)
         
         col1, col2, col3, col4 = st.columns(4)
@@ -573,9 +444,8 @@ with tab1:
         if total_records > 0:
             st.subheader("**Traffic Classification**")
             
-            # ✅ FIXED: Complete pie chart definition
             fig_pie = go.Figure(data=[go.Pie(
-                labels=['Normal Traffic', 'Anomalous Traffic'],  # ✅ Fixed the syntax error
+                labels=['Normal Traffic', 'Anomalous Traffic'],
                 values=[normal_count, anomaly_count],
                 hole=.3,
                 marker_colors=['#2E8B57', '#DC143C']
@@ -587,32 +457,134 @@ with tab1:
             )
             
             st.plotly_chart(fig_pie, use_container_width=True)
-            
-            # Time series chart
-            if 'timestamp' in df_hist.columns:
-                st.subheader("**Anomaly Detection Timeline**")
-                df_hist['timestamp'] = pd.to_datetime(df_hist['timestamp'])
-                
-                fig_timeline = px.scatter(
-                    df_hist, 
-                    x='timestamp', 
-                    y='reconstruction_error',
-                    color='anomaly',
-                    color_discrete_map={0: 'green', 1: 'red'},
-                    title="Reconstruction Error Over Time",
-                    labels={'reconstruction_error': 'Reconstruction Error', 'timestamp': 'Time'}
-                )
-                
-                fig_timeline.add_hline(y=thresh, line_dash="dash", line_color="orange", 
-                                     annotation_text=f"Threshold: {thresh}")
-                
-                st.plotly_chart(fig_timeline, use_container_width=True)
     
     else:
-        st.info("📊 No data collected yet. Start monitoring to see analytics.")
+        st.info("📊 No data collected yet. Generate sample data to see analytics.")
         
-        st.subheader("**Generate Sample Data for Testing**")
         if st.button("🎲 Generate Sample Detection Data", type="secondary"):
             sample_data = []
             for i in range(20):
-                inter
+                inter_arrival = np.random.exponential(0.05)
+                packet_len = np.random.normal(800, 200)
+                
+                result = mock_predict_anomaly(inter_arrival, packet_len)
+                result.update({
+                    "timestamp": datetime.now() - timedelta(minutes=i),
+                    "inter_arrival_time": inter_arrival,
+                    "packet_length": packet_len,
+                    "source_ip": f"192.168.1.{np.random.randint(1, 255)}",
+                    "dest_ip": "192.168.1.1"
+                })
+                sample_data.append(result)
+            
+            st.session_state.historical_data.extend(sample_data)
+            st.success("✅ Generated 20 sample detection records!")
+            st.rerun()
+
+# --- Tab 2: Live Stream ---
+with tab2:
+    st.subheader("📡 Real-Time Monitoring")
+    
+    if st.button("📊 Generate Live Data Sample"):
+        sample_data = []
+        for i in range(5):
+            inter_arrival = np.random.exponential(0.02)
+            packet_len = np.random.normal(800, 300)
+            
+            result = mock_predict_anomaly(inter_arrival, packet_len)
+            result.update({
+                "timestamp": datetime.now(),
+                "inter_arrival_time": inter_arrival,
+                "packet_length": packet_len,
+                "source_ip": f"192.168.1.{np.random.randint(1, 255)}",
+                "dest_ip": "192.168.1.1"
+            })
+            sample_data.append(result)
+        
+        st.session_state.historical_data.extend(sample_data)
+        
+        df_pred = pd.DataFrame(sample_data)
+        
+        st.subheader("**Live Data Stream**")
+        
+        display_df = df_pred[[
+            "timestamp", "source_ip", "dest_ip", "inter_arrival_time", 
+            "packet_length", "reconstruction_error", "anomaly", "anomaly_type"
+        ]].copy()
+        
+        st.dataframe(display_df, use_container_width=True)
+        
+        anomalies_in_batch = df_pred['anomaly'].sum()
+        if anomalies_in_batch > 0:
+            st.error(f"🚨 {anomalies_in_batch} anomalies detected!")
+        else:
+            st.success("✅ No anomalies detected")
+
+# --- Tab 3: Manual Entry ---
+with tab3:
+    st.subheader("🔧 Manual Entry for Testing")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        manual_inter_arrival = st.number_input(
+            "Inter-arrival Time (seconds)", 
+            min_value=0.0001, 
+            max_value=10.0, 
+            value=0.02, 
+            step=0.001,
+            format="%.4f"
+        )
+    
+    with col2:
+        manual_packet_length = st.number_input(
+            "Packet Length (bytes)", 
+            min_value=1.0, 
+            max_value=2000.0, 
+            value=800.0, 
+            step=1.0
+        )
+    
+    if st.button("🔍 Analyze Traffic", type="primary"):
+        result = predict_anomaly(manual_inter_arrival, manual_packet_length)
+        
+        result.update({
+            "timestamp": datetime.now(),
+            "inter_arrival_time": manual_inter_arrival,
+            "packet_length": manual_packet_length,
+            "source_ip": "Manual_Test",
+            "dest_ip": "192.168.1.1"
+        })
+        
+        st.session_state.historical_data.append(result)
+        
+        if result.get('anomaly', 0) == 1:
+            st.error("🚨 **ANOMALY DETECTED**")
+            st.write(f"**Type**: {result.get('anomaly_type', 'Unknown')}")
+            st.write(f"**Reconstruction Error**: {result.get('reconstruction_error', 0):.4f}")
+        else:
+            st.success("✅ **NORMAL TRAFFIC**")
+            st.write(f"**Confidence**: {result.get('confidence', 0):.2%}")
+
+# --- Tab 4: Metrics & Alerts ---
+with tab4:
+    st.subheader("📈 System Metrics & Security Alerts")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Total Predictions", len(st.session_state.historical_data))
+    
+    with col2:
+        st.metric("Security Alerts", len(st.session_state.anomaly_alerts))
+    
+    with col3:
+        if st.session_state.historical_data:
+            recent_anomalies = sum(1 for d in st.session_state.historical_data[-10:] if d.get('anomaly', 0) == 1)
+            st.metric("Recent Anomalies", f"{recent_anomalies}/10")
+    
+    if st.session_state.anomaly_alerts:
+        st.subheader("🚨 **Recent Security Alerts**")
+        alert_df = pd.DataFrame(st.session_state.anomaly_alerts)
+        st.dataframe(alert_df.tail(10), use_container_width=True)
+    else:
