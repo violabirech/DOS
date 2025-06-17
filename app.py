@@ -18,84 +18,54 @@ import os
 warnings.filterwarnings('ignore')
 
 # --- Configuration ---
-# ✅ FIXED: Correct primary endpoint with authentication
-PRIMARY_API_URL = "https://api-inference.huggingface.co/models/violabirech/dos-anomalies-detection"
+# ✅ FIXED: Correct API endpoints for Hugging Face Gradio spaces
+PRIMARY_API_URL = "https://violabirech-dos-anomalies-detection.hf.space/run/predict" 
 BACKUP_API_URLS = [
-    "https://violabirech-dos-anomalies-detection.hf.space/",
-    "https://violabirech-dos-anomalies-detection.hf.space/call/predict",
-    "https://violabirech-dos-anomalies-detection.hf.space/predict"
+    "https://violabirech-dos-anomalies-detection.hf.space/api/predict",
+    "https://violabirech-dos-anomalies-detection.hf.space/predict",
+    "https://api-inference.huggingface.co/models/violabirech/dos-anomalies-detection"
 ]
 
 INFLUXDB_URL = "https://us-east-1-1.aws.cloud2.influxdata.com"
 
 # --- ✅ ENHANCED SECURE TOKEN LOADING ---
 INFLUXDB_TOKEN = None
-HUGGINGFACE_API_TOKEN = None
 INFLUXDB_AVAILABLE = False
-HUGGINGFACE_API_AVAILABLE = False
 
-# Load InfluxDB Token
 try:
+    # Try Streamlit secrets first
     INFLUXDB_TOKEN = st.secrets.get("INFLUXDB_TOKEN")
     if INFLUXDB_TOKEN:
         INFLUXDB_AVAILABLE = True
-        st.sidebar.success("🔐 InfluxDB token loaded from secrets")
+        st.sidebar.success("🔐 Using InfluxDB token from secrets")
 except:
+    pass
+
+if not INFLUXDB_TOKEN:
     try:
+        # Try environment variable
         INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN")
         if INFLUXDB_TOKEN:
             INFLUXDB_AVAILABLE = True
-            st.sidebar.success("🔐 InfluxDB token loaded from environment")
+            st.sidebar.success("🔐 Using InfluxDB token from environment")
     except:
         pass
 
-# Load Hugging Face API Token
-try:
-    HUGGINGFACE_API_TOKEN = st.secrets.get("HUGGINGFACE_API_TOKEN")
-    if HUGGINGFACE_API_TOKEN:
-        HUGGINGFACE_API_AVAILABLE = True
-        st.sidebar.success("🔐 HF API token loaded from secrets")
-except:
-    try:
-        HUGGINGFACE_API_TOKEN = os.getenv("HUGGINGFACE_API_TOKEN")
-        if HUGGINGFACE_API_TOKEN:
-            HUGGINGFACE_API_AVAILABLE = True
-            st.sidebar.success("🔐 HF API token loaded from environment")
-    except:
-        pass
+if not INFLUXDB_TOKEN:
+    # Allow manual token input as fallback
+    st.sidebar.warning("⚠️ InfluxDB token not found in secrets or environment")
+    manual_token = st.sidebar.text_input(
+        "Enter InfluxDB Token (optional)", 
+        type="password",
+        help="Enter your InfluxDB token to enable database features"
+    )
+    if manual_token:
+        INFLUXDB_TOKEN = manual_token
+        INFLUXDB_AVAILABLE = True
+        st.sidebar.success("🔐 Using manually entered token")
 
-# Manual token input fallback
-if not INFLUXDB_AVAILABLE or not HUGGINGFACE_API_AVAILABLE:
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("🔑 Manual Token Input")
-    
-    if not INFLUXDB_AVAILABLE:
-        manual_influx_token = st.sidebar.text_input(
-            "InfluxDB Token (optional)", 
-            type="password",
-            help="Enter your InfluxDB token to enable database features"
-        )
-        if manual_influx_token:
-            INFLUXDB_TOKEN = manual_influx_token
-            INFLUXDB_AVAILABLE = True
-            st.sidebar.success("🔐 Using manual InfluxDB token")
-
-    if not HUGGINGFACE_API_AVAILABLE:
-        manual_hf_token = st.sidebar.text_input(
-            "Hugging Face API Token (required for live API)", 
-            type="password",
-            help="Get your token from https://huggingface.co/settings/tokens"
-        )
-        if manual_hf_token:
-            HUGGINGFACE_API_TOKEN = manual_hf_token
-            HUGGINGFACE_API_AVAILABLE = True
-            st.sidebar.success("🔐 Using manual HF token")
-
-# Status indicators
 if not INFLUXDB_AVAILABLE:
-    st.sidebar.warning("⚠️ InfluxDB features disabled (no token)")
-if not HUGGINGFACE_API_AVAILABLE:
-    st.sidebar.warning("⚠️ Live API disabled (no HF token)")
+    st.sidebar.info("🧪 Running in mock data mode - InfluxDB features disabled")
 
 INFLUXDB_ORG = "Anormally Detection"
 INFLUXDB_BUCKET = "realtime"
@@ -167,109 +137,50 @@ def mock_predict_anomaly(inter_arrival_time, packet_length):
         "features_used": ["inter_arrival_time", "packet_length"]
     }
 
-def test_huggingface_inference_api(test_payload):
-    """Test Hugging Face Inference API with proper authentication"""
-    if not HUGGINGFACE_API_AVAILABLE:
-        st.error("❌ Hugging Face API token not available")
-        return None
-    
-    headers = {"Authorization": f"Bearer {HUGGINGFACE_API_TOKEN}"}
-    
-    try:
-        st.write(f"🔍 Testing Hugging Face Inference API: {PRIMARY_API_URL}")
-        
-        # HF Inference API expects different payload format
-        hf_payload = {
-            "inputs": [test_payload["inter_arrival_time"], test_payload["packet_length"]]
-        }
-        
-        response = requests.post(PRIMARY_API_URL, json=hf_payload, headers=headers, timeout=15)
-        
-        if response.status_code == 200:
-            try:
-                result = response.json()
-                st.success(f"✅ Hugging Face Inference API working!")
-                st.json(result)
-                return PRIMARY_API_URL
-            except ValueError:
-                st.error("❌ Invalid JSON response from HF API")
-        elif response.status_code == 503:
-            st.warning("⚠️ Model is loading, please wait and try again...")
-        else:
-            st.error(f"❌ HF API returned status {response.status_code}: {response.text[:200]}...")
-            
-    except requests.exceptions.Timeout:
-        st.error("❌ HF API request timed out")
-    except Exception as e:
-        st.error(f"❌ HF API error: {str(e)}")
-    
-    return None
-
-def test_gradio_space_patterns(base_url, test_payload):
-    """Test different Gradio Space API patterns"""
-    patterns = [
-        {"url": base_url, "data": {"data": [test_payload["inter_arrival_time"], test_payload["packet_length"]]}},
-        {"url": f"{base_url}call/predict", "data": {"data": [test_payload["inter_arrival_time"], test_payload["packet_length"]]}},
-        {"url": f"{base_url}predict", "data": test_payload},
-        {"url": base_url, "data": test_payload}
-    ]
-    
-    for pattern in patterns:
-        try:
-            st.write(f"🔍 Testing Gradio pattern: {pattern['url']}")
-            
-            response = requests.post(pattern["url"], json=pattern["data"], timeout=10)
-            
-            if response.status_code == 200:
-                try:
-                    result = response.json()
-                    
-                    # Check different response formats
-                    if isinstance(result, dict) and "data" in result:
-                        st.success(f"✅ Gradio Space API working: {pattern['url']}")
-                        st.json(result)
-                        return pattern['url']
-                    elif isinstance(result, list):
-                        st.success(f"✅ Gradio Space API working: {pattern['url']}")
-                        st.json(result)
-                        return pattern['url']
-                    
-                except ValueError:
-                    st.error(f"❌ Invalid JSON from {pattern['url']}")
-            else:
-                st.write(f"Status {response.status_code}: {response.text[:100]}...")
-                
-        except Exception as e:
-            st.write(f"Error: {str(e)}")
-    
-    return None
-
 def test_all_apis():
-    """Enhanced API testing with proper authentication and multiple patterns"""
+    """Enhanced API testing with detailed logging"""
     test_payload = {
         "inter_arrival_time": 0.02,
         "packet_length": 800.0
     }
     
-    st.write("🔍 **Testing APIs in order of preference...**")
+    all_urls = [PRIMARY_API_URL] + BACKUP_API_URLS
     
-    # 1. Test Hugging Face Inference API first (most reliable)
-    working_url = test_huggingface_inference_api(test_payload)
-    if working_url:
-        return working_url
+    for i, url in enumerate(all_urls):
+        try:
+            st.write(f"🔍 Testing API {i+1}/{len(all_urls)}: {url}")
+            
+            response = requests.post(url, json=test_payload, timeout=10)
+            
+            if response.status_code == 200:
+                try:
+                    result = response.json()
+                    required_keys = ["anomaly", "reconstruction_error"]
+                    if all(key in result for key in required_keys):
+                        st.success(f"✅ API {i+1} working: {url}")
+                        st.json(result)
+                        return url
+                    else:
+                        st.error(f"❌ API {i+1} returned invalid response structure")
+                except ValueError:
+                    st.error(f"❌ API {i+1} returned invalid JSON")
+            else:
+                st.error(f"❌ API {i+1} returned status {response.status_code}")
+                if response.text:
+                    st.write(f"Response: {response.text[:200]}...")
+                    
+        except requests.exceptions.Timeout:
+            st.error(f"❌ API {i+1} timed out")
+        except requests.exceptions.ConnectionError:
+            st.error(f"❌ API {i+1} connection failed")
+        except Exception as e:
+            st.error(f"❌ API {i+1} error: {str(e)}")
     
-    # 2. Test Gradio Space patterns
-    st.write("🔍 **Testing Gradio Space patterns...**")
-    base_url = "https://violabirech-dos-anomalies-detection.hf.space/"
-    working_url = test_gradio_space_patterns(base_url, test_payload)
-    if working_url:
-        return working_url
-    
-    st.error("❌ No working APIs found. Using mock mode.")
+    st.error("❌ No working APIs found")
     return None
 
 def predict_anomaly(inter_arrival_time, packet_length):
-    """Enhanced prediction function with proper authentication"""
+    """Enhanced prediction function with multiple fallback options"""
     if use_mock_api:
         return mock_predict_anomaly(inter_arrival_time, packet_length)
     
@@ -281,39 +192,27 @@ def predict_anomaly(inter_arrival_time, packet_length):
     # Try working API first if we have one
     if st.session_state.working_api_url:
         try:
-            if st.session_state.working_api_url == PRIMARY_API_URL and HUGGINGFACE_API_AVAILABLE:
-                # Use HF Inference API format
-                headers = {"Authorization": f"Bearer {HUGGINGFACE_API_TOKEN}"}
-                hf_payload = {"inputs": [float(inter_arrival_time), float(packet_length)]}
-                
-                response = requests.post(st.session_state.working_api_url, json=hf_payload, headers=headers, timeout=10)
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    
-                    # Convert HF response to standard format
-                    if isinstance(result, list) and len(result) >= 2:
-                        converted_result = {
-                            "anomaly": int(result[0]),
-                            "reconstruction_error": float(result[1]),
-                            "confidence": float(result[2]) if len(result) > 2 else 0.8,
-                            "anomaly_type": str(result[3]) if len(result) > 3 else "Unknown",
-                            "model_version": "huggingface_inference_v1.0",
-                            "timestamp": datetime.now().isoformat()
-                        }
-                        st.session_state.api_status = "Online"
-                        return converted_result
-            else:
-                # Use standard format for Gradio endpoints
-                response = requests.post(st.session_state.working_api_url, json=payload, timeout=10)
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    st.session_state.api_status = "Online"
-                    return result
-                    
-        except Exception as e:
+            response = requests.post(st.session_state.working_api_url, json=payload, timeout=10)
+            if response.status_code == 200:
+                result = response.json()
+                st.session_state.api_status = "Online"
+                return result
+        except:
             st.session_state.working_api_url = None
+    
+    # Try all APIs
+    all_urls = [PRIMARY_API_URL] + BACKUP_API_URLS
+    
+    for url in all_urls:
+        try:
+            response = requests.post(url, json=payload, timeout=5)
+            if response.status_code == 200:
+                result = response.json()
+                st.session_state.api_status = "Online"
+                st.session_state.working_api_url = url
+                return result
+        except:
+            continue
     
     # All APIs failed, use mock
     st.session_state.api_status = "Offline"
@@ -436,6 +335,53 @@ def check_bucket_data(bucket, org, timeout=10):
     except Exception as e:
         return False
 
+def validate_influxdb_config():
+    """Validate InfluxDB connection and configuration"""
+    validation_results = {
+        'connection': False,
+        'organization': False,
+        'bucket': False,
+        'permissions': False,
+        'buckets_found': []
+    }
+    
+    if not INFLUXDB_AVAILABLE:
+        return validation_results
+    
+    try:
+        client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
+        buckets_api = BucketsApi(client)
+        
+        buckets = buckets_api.find_buckets()
+        validation_results['connection'] = True
+        validation_results['organization'] = True
+        
+        bucket_names = [bucket.name for bucket in buckets.buckets]
+        validation_results['buckets_found'] = bucket_names
+        
+        if INFLUXDB_BUCKET in bucket_names:
+            validation_results['bucket'] = True
+            
+            query_api = client.query_api()
+            test_query = f'''
+            from(bucket: "{INFLUXDB_BUCKET}")
+              |> range(start: -1h)
+              |> limit(n: 1)
+            '''
+            
+            try:
+                query_api.query_data_frame(org=INFLUXDB_ORG, query=test_query)
+                validation_results['permissions'] = True
+            except:
+                validation_results['permissions'] = False
+        
+        client.close()
+        
+    except Exception as e:
+        st.error(f"Connection validation failed: {e}")
+    
+    return validation_results
+
 # --- Sidebar Controls ---
 st.sidebar.title("🔧 Controls")
 
@@ -460,6 +406,11 @@ refresh_interval = st.sidebar.selectbox("Refresh Interval", [5, 10, 15, 30, 60],
 time_window = st.sidebar.selectbox("Time Range", ["-5m", "-15m", "-1h", "-6h", "-12h", "-1d", "-7d", "-30d"], index=0)
 thresh = st.sidebar.slider("Anomaly Threshold", 0.01, 1.0, 0.1, 0.01)
 max_records = st.sidebar.slider("Max Records to Process", 10, 100, 25, 10)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("⚡ Performance Settings")
+query_timeout = st.sidebar.slider("Query Timeout (seconds)", 5, 60, 15, 5)
+cache_ttl = st.sidebar.slider("Cache TTL (seconds)", 30, 300, 60, 30)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🎛️ Monitoring Controls")
@@ -547,6 +498,7 @@ with tab1:
         if total_records > 0:
             st.subheader("**Traffic Classification**")
             
+            # ✅ FIXED: Complete pie chart definition
             fig_pie = go.Figure(data=[go.Pie(
                 labels=['Normal Traffic', 'Anomalous Traffic'],
                 values=[normal_count, anomaly_count],
@@ -569,4 +521,100 @@ with tab1:
                 fig_timeline = px.scatter(
                     df_hist, 
                     x='timestamp', 
-                    y='reconstruction
+                    y='reconstruction_error',
+                    color='anomaly',
+                    color_discrete_map={0: 'green', 1: 'red'},
+                    title="Reconstruction Error Over Time",
+                    labels={'reconstruction_error': 'Reconstruction Error', 'timestamp': 'Time'}
+                )
+                
+                fig_timeline.add_hline(y=thresh, line_dash="dash", line_color="orange", 
+                                     annotation_text=f"Threshold: {thresh}")
+                
+                st.plotly_chart(fig_timeline, use_container_width=True)
+    
+    else:
+        st.info("📊 No data collected yet. Generate sample data to see analytics.")
+        
+        if st.button("🎲 Generate Sample Detection Data", type="secondary"):
+            sample_data = []
+            for i in range(20):
+                inter_arrival = np.random.exponential(0.05)
+                packet_len = np.random.normal(800, 200)
+                
+                result = mock_predict_anomaly(inter_arrival, packet_len)
+                result.update({
+                    "timestamp": datetime.now() - timedelta(minutes=i),
+                    "inter_arrival_time": inter_arrival,
+                    "packet_length": packet_len,
+                    "source_ip": f"192.168.1.{np.random.randint(1, 255)}",
+                    "dest_ip": "192.168.1.1"
+                })
+                sample_data.append(result)
+            
+            st.session_state.historical_data.extend(sample_data)
+            st.success("✅ Generated 20 sample detection records!")
+            st.rerun()
+
+# --- Tab 2: Live Stream ---
+with tab2:
+    st.subheader("📡 Real-Time Monitoring")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔍 Quick Data Check"):
+            with st.spinner("Checking data availability..."):
+                has_data = check_bucket_data(INFLUXDB_BUCKET, INFLUXDB_ORG)
+                if has_data:
+                    st.success("✅ Bucket has data")
+                else:
+                    st.warning("⚠️ No data in bucket - using mock data")
+    
+    with col2:
+        if st.button("🔄 Manual Refresh"):
+            st.rerun()
+    
+    if st.button("📊 Generate Live Data Sample"):
+        sample_data = []
+        for i in range(5):
+            inter_arrival = np.random.exponential(0.02)
+            packet_len = np.random.normal(800, 300)
+            
+            result = mock_predict_anomaly(inter_arrival, packet_len)
+            result.update({
+                "timestamp": datetime.now(),
+                "inter_arrival_time": inter_arrival,
+                "packet_length": packet_len,
+                "source_ip": f"192.168.1.{np.random.randint(1, 255)}",
+                "dest_ip": "192.168.1.1"
+            })
+            sample_data.append(result)
+        
+        st.session_state.historical_data.extend(sample_data)
+        
+        df_pred = pd.DataFrame(sample_data)
+        st.subheader("**Live Data Stream**")
+        
+        def highlight_anomalies(row):
+            if row['anomaly'] == 1:
+                return ['background-color: #ffcccc'] * len(row)
+            return [''] * len(row)
+        
+        display_df = df_pred[[
+            "timestamp", "source_ip", "dest_ip", "inter_arrival_time", 
+            "packet_length", "reconstruction_error", "anomaly", "anomaly_type"
+        ]].copy()
+        
+        styled_df = display_df.style.apply(highlight_anomalies, axis=1)
+        st.dataframe(styled_df, use_container_width=True, height=300)
+        
+        anomalies_in_batch = df_pred['anomaly'].sum()
+        if anomalies_in_batch > 0:
+            st.error(f"🚨 {anomalies_in_batch} anomalies detected in this batch!")
+            
+            anomaly_types = df_pred[df_pred['anomaly'] == 1]['anomaly_type'].value_counts()
+            st.write("**Detected Attack Types:**")
+            for attack_type, count in anomaly_types.items():
+                st.write(f"  • {attack_type}: {count}")
+        else:
+            st.success("✅ No anomalies detected in this batch")  #
