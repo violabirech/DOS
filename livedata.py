@@ -15,7 +15,7 @@ st.title("🚨 Real-Time DoS Detection Dashboard")
 
 # --- InfluxDB Settings ---
 INFLUXDB_URL = "https://us-east-1-1.aws.cloud2.influxdata.com"
-INFLUXDB_TOKEN = "your_token_here"  # Replace this
+INFLUXDB_TOKEN = "DfmvA8hl5EeOcpR-d6c_ep6dRtSRbEcEM_Zqp8-1746dURtVqMDGni4rRNQbHouhqmdC7t9Kj6Y-AyOjbBg-zg=="  # Replace this
 INFLUXDB_ORG = "Anormally Detection"
 INFLUXDB_BUCKET = "realtime"
 MEASUREMENT = "network_traffic"
