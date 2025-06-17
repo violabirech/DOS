@@ -573,6 +573,46 @@ with tab1:
         if total_records > 0:
             st.subheader("**Traffic Classification**")
             
-            # ✅ Fixed: Complete pie chart definition
+            # ✅ FIXED: Complete pie chart definition
             fig_pie = go.Figure(data=[go.Pie(
-                labels=['Normal Traffic', '
+                labels=['Normal Traffic', 'Anomalous Traffic'],  # ✅ Fixed the syntax error
+                values=[normal_count, anomaly_count],
+                hole=.3,
+                marker_colors=['#2E8B57', '#DC143C']
+            )])
+            
+            fig_pie.update_layout(
+                title="Network Traffic Distribution",
+                annotations=[dict(text=f'{anomaly_rate:.1f}%<br>Anomalies', x=0.5, y=0.5, font_size=16, showarrow=False)]
+            )
+            
+            st.plotly_chart(fig_pie, use_container_width=True)
+            
+            # Time series chart
+            if 'timestamp' in df_hist.columns:
+                st.subheader("**Anomaly Detection Timeline**")
+                df_hist['timestamp'] = pd.to_datetime(df_hist['timestamp'])
+                
+                fig_timeline = px.scatter(
+                    df_hist, 
+                    x='timestamp', 
+                    y='reconstruction_error',
+                    color='anomaly',
+                    color_discrete_map={0: 'green', 1: 'red'},
+                    title="Reconstruction Error Over Time",
+                    labels={'reconstruction_error': 'Reconstruction Error', 'timestamp': 'Time'}
+                )
+                
+                fig_timeline.add_hline(y=thresh, line_dash="dash", line_color="orange", 
+                                     annotation_text=f"Threshold: {thresh}")
+                
+                st.plotly_chart(fig_timeline, use_container_width=True)
+    
+    else:
+        st.info("📊 No data collected yet. Start monitoring to see analytics.")
+        
+        st.subheader("**Generate Sample Data for Testing**")
+        if st.button("🎲 Generate Sample Detection Data", type="secondary"):
+            sample_data = []
+            for i in range(20):
+                inter
