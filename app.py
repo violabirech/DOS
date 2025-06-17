@@ -14,6 +14,7 @@ from influxdb_client.client.bucket_api import BucketsApi
 import plotly.express as px
 import plotly.graph_objects as go
 import warnings
+import os
 warnings.filterwarnings('ignore')
 
 # --- Configuration ---
@@ -26,8 +27,6 @@ BACKUP_API_URLS = [
 ]
 
 INFLUXDB_URL = "https://us-east-1-1.aws.cloud2.influxdata.com"
-
-import os
 
 # --- ✅ SECURITY FIX: Secure token loading ---
 
